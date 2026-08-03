@@ -4,7 +4,7 @@ A VS Code [language model provider](https://code.visualstudio.com/docs/agent-cus
 
 Models are discovered from the endpoint at runtime, so newly released models appear without an extension update.
 
-![Model picker showing Agent Router models](https://github.com/user-attachments/assets/90cce426-5c63-43b8-9579-547622ec894d)
+![The VS Code chat model picker listing Claude Opus 5 and GPT-5.6 Terra under Tetrate Agent Router](https://raw.githubusercontent.com/tetrateio/tetrate-model-provider/master/images/model-picker.png)
 
 ## Why use this
 
@@ -16,7 +16,7 @@ Registering as a provider extension removes that limitation. One Agent Router ke
 - Any third-party extension that selects models through `vscode.lm`
 - Anthropic, OpenAI, Google, xAI, Groq, and DeepInfra models behind a single endpoint and a single bill
 
-![Model picker showing Agent Router models](https://github.com/user-attachments/assets/bb59cff3-9ed5-40cf-91b0-f90b7c201b3a)
+![The Language Models view with the Tetrate Agent Router group expanded, showing each model's context size and tool and vision support](https://raw.githubusercontent.com/tetrateio/tetrate-model-provider/master/images/manage-language-models.png)
 
 ## Requirements
 
@@ -30,33 +30,36 @@ VS Code 1.106 is the floor because `LanguageModelDataPart`, which carries image 
 
 ## Installation
 
-### From the Visual Studio Code Marketplace
+### Option 1: Install from the Visual Studio Code Marketplace (recommended)
 
-> [!WARNING]  
-> Submission to the VSCode Marketplace is in progress, but not available yet.
+1. Open Visual Studio Code.  
+1. Open the Extensions view.  
+1. Search for **Tetrate Agent Router Model Provider**, and install it.  
 
-Open the Extensions view, search for **Tetrate Agent Router Model Provider**, and install it. Or from a terminal:
+Or from a terminal:
 
 ```bash
 code --install-extension tetrate.tetrate-model-provider
 ```
 
-### From a VSIX
+### Option 2: Install from a local VSIX
 
-1. Download [tetrate-model-provider-0.x.x.vsix](https://github.com/tetrateio/tetrate-model-provider/releases/download/v0.2.0/tetrate-model-provider-0.2.0.vsix)
+1. Download [tetrate-model-provider-0.2.0.vsix](https://github.com/tetrateio/tetrate-model-provider/releases/download/v0.2.0/tetrate-model-provider-0.2.0.vsix) from the [Github repo](https://github.com/tetrateio/tetrate-model-provider).
 1. Install from command line using `code`:
 
 ```bash
-code --install-extension tetrate-model-provider-0.x.x.vsix
+code --install-extension tetrate-model-provider-0.2.0.vsix
 ```
 
 Alternatively, open the Extensions view, choose **Install from VSIX…** from the `⋯` menu, and select the file.
 
 Reload afterwards with **Developer: Reload Window**.
 
-### From source, for development
+### Option 3: Build from source, for development
 
-Open the project in VS Code and press <kbd>F5</kbd>. This builds the bundle and launches a second window with the extension loaded, which avoids reinstalling on every change.
+1. Check out the project's sources from GitHub: `git clone https://github.com/tetrateio/tetrate-model-provider.git`.
+1. Open the project in VS Code
+1. Press <kbd>F5</kbd>. This builds the bundle and launches a second window with the extension loaded, which avoids reinstalling on every change.
 
 ## Quick start
 

@@ -55,8 +55,16 @@ jobs:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
         run: npx vsce publish --no-dependencies --packagePath *.vsix
 
-      - name: Create the GitHub release
+      # The release usually already exists, as a draft written by hand before
+      # the tag was pushed. Creating it again would fail, and its notes are
+      # better than --generate-notes, so only fall back to creating one when
+      # the tag arrived without a release behind it.
+      - name: Attach the VSIX to the GitHub release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --generate-notes ./*.vsix
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" ./*.vsix --clobber
