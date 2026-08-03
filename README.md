@@ -32,6 +32,9 @@ VS Code 1.106 is the floor because `LanguageModelDataPart`, which carries image 
 
 ### From the Visual Studio Code Marketplace
 
+> [!WARNING]  
+> Submission to the VSCode Marketplace is in progress, but not available yet.
+
 Open the Extensions view, search for **Tetrate Agent Router Model Provider**, and install it. Or from a terminal:
 
 ```bash
@@ -40,11 +43,11 @@ code --install-extension tetrate.tetrate-model-provider
 
 ### From a VSIX
 
-1. Download [tetrate-model-provider-0.1.1.vsix](https://github.com/tetrateio/tetrate-model-provider/releases/download/v0.1.1/tetrate-model-provider-0.1.1.vsix)
+1. Download [tetrate-model-provider-0.x.x.vsix](https://github.com/tetrateio/tetrate-model-provider/releases/download/v0.2.0/tetrate-model-provider-0.2.0.vsix)
 1. Install from command line using `code`:
 
 ```bash
-code --install-extension tetrate-model-provider-0.1.1.vsix
+code --install-extension tetrate-model-provider-0.x.x.vsix
 ```
 
 Alternatively, open the Extensions view, choose **Install from VSIX…** from the `⋯` menu, and select the file.
@@ -89,16 +92,16 @@ The base URL is pre-configured for the hosted service and can be changed, either
 
 ```jsonc
 {
-    "tetrate-model-provider.baseUrl": "https://agent-router.internal.example.com/v1"
+    "tetrate-model-provider.baseUrl": "https://router.tare-<tenantID>.tetrate.ai/v1"
 }
 ```
 
 Input is normalized before use. Surrounding whitespace and trailing slashes are stripped, and `/v1` is appended when no version segment is present, so all three of these resolve to the same endpoint:
 
 ```text
-https://agent-router.internal.example.com
-https://agent-router.internal.example.com/v1
-  https://agent-router.internal.example.com/v1/
+https://router.tare-<tenantID>.tetrate.ai
+https://router.tare-<tenantID>.tetrate.ai/v1
+https://router.tare-<tenantID>.tetrate.ai/v1/
 ```
 
 A URL that already carries an explicit version segment, such as `/v2`, is left alone. Both `http` and `https` are accepted, which allows a local proxy on `http://localhost:8080`.
