@@ -2,7 +2,7 @@
 
 ## 0.2.0
 
-First release published to the Visual Studio Marketplace.
+First release published to the Visual Studio Code Marketplace.
 
 - **Breaking.** `tetrate-model-provider.baseUrl` and `tetrate-model-provider.requestHeaders` are now machine-scoped and can only be set in User settings. Both influence where the API key is sent, and a workspace `.vscode/settings.json` was previously able to change them. Move any workspace-level value to User settings.
 - An `Authorization` entry in `requestHeaders` is now discarded rather than overriding the key from secret storage.

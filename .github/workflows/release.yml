@@ -46,7 +46,10 @@ jobs:
           name: vsix
           path: '*.vsix'
 
-      - name: Publish to the Visual Studio Marketplace
+      # Azure DevOps retires global PATs on 2026-12-01. After that VSCE_PAT
+      # stops working and this step needs `vsce publish --azure-credential`
+      # against a Microsoft Entra ID workload identity instead.
+      - name: Publish to the Visual Studio Code Marketplace
         if: startsWith(github.ref, 'refs/tags/v') && inputs.dry-run != true
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}

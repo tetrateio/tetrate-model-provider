@@ -4,6 +4,8 @@ A VS Code [language model provider](https://code.visualstudio.com/docs/agent-cus
 
 Models are discovered from the endpoint at runtime, so newly released models appear without an extension update.
 
+![Model picker showing Agent Router models](https://github.com/user-attachments/assets/90cce426-5c63-43b8-9579-547622ec894d)
+
 ## Why use this
 
 VS Code can already talk to an OpenAI-compatible endpoint through its built-in Custom Endpoint support. That path is limited to the chat view: other extensions calling `vscode.lm.selectChatModels()` cannot see those models.
@@ -13,6 +15,8 @@ Registering as a provider extension removes that limitation. One Agent Router ke
 - The chat view and agent mode
 - Any third-party extension that selects models through `vscode.lm`
 - Anthropic, OpenAI, Google, xAI, Groq, and DeepInfra models behind a single endpoint and a single bill
+
+![Model picker showing Agent Router models](https://github.com/user-attachments/assets/bb59cff3-9ed5-40cf-91b0-f90b7c201b3a)
 
 ## Requirements
 
@@ -26,7 +30,7 @@ VS Code 1.106 is the floor because `LanguageModelDataPart`, which carries image 
 
 ## Installation
 
-### From the Marketplace
+### From the Visual Studio Code Marketplace
 
 Open the Extensions view, search for **Tetrate Agent Router Model Provider**, and install it. Or from a terminal:
 
@@ -36,10 +40,11 @@ code --install-extension tetrate.tetrate-model-provider
 
 ### From a VSIX
 
+1. Download [tetrate-model-provider-0.1.1.vsix](https://github.com/tetrateio/tetrate-model-provider/releases/download/v0.1.1/tetrate-model-provider-0.1.1.vsix)
+1. Install from command line using `code`:
+
 ```bash
-npm install
-npm run package
-code --install-extension tetrate-model-provider-0.2.0.vsix
+code --install-extension tetrate-model-provider-0.1.1.vsix
 ```
 
 Alternatively, open the Extensions view, choose **Install from VSIX…** from the `⋯` menu, and select the file.
