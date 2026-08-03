@@ -1,0 +1,8 @@
+# ignore everything
+**
+# then whitelist what ships
+!LICENSE
+!README.md
+!CHANGELOG.md
+!out/extension.js
+!images/icon.png

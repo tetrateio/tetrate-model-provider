@@ -1,0 +1,113 @@
+{
+    "name": "tetrate-model-provider",
+    "publisher": "tetrate",
+    "displayName": "Tetrate Agent Router Model Provider",
+    "description": "Provides language models from Tetrate Agent Router Service to VS Code chat and to other extensions",
+    "version": "0.1.1",
+    "license": "Apache-2.0",
+    "icon": "images/icon.png",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/tetrateio/tetrate-model-provider.git"
+    },
+    "engines": {
+        "vscode": "^1.106.0"
+    },
+    "categories": [
+        "AI",
+        "Chat",
+        "Machine Learning"
+    ],
+    "keywords": [
+        "ai",
+        "chat",
+        "language model",
+        "tetrate",
+        "agent router",
+        "byok",
+        "openai-compatible"
+    ],
+    "activationEvents": [],
+    "main": "./out/extension.js",
+    "contributes": {
+        "languageModelChatProviders": [
+            {
+                "vendor": "tetrate-agent-router",
+                "displayName": "Tetrate Agent Router"
+            }
+        ],
+        "commands": [
+            {
+                "command": "tetrate-model-provider.setApiKey",
+                "title": "Tetrate Agent Router: Set Agent Router API Key"
+            },
+            {
+                "command": "tetrate-model-provider.clearApiKey",
+                "title": "Tetrate Agent Router: Clear Agent Router API Key"
+            },
+            {
+                "command": "tetrate-model-provider.setBaseUrl",
+                "title": "Tetrate Agent Router: Set Base URL"
+            },
+            {
+                "command": "tetrate-model-provider.refreshModels",
+                "title": "Tetrate Agent Router: Refresh Model List"
+            }
+        ],
+        "configuration": {
+            "title": "Tetrate Agent Router Model Provider",
+            "properties": {
+                "tetrate-model-provider.baseUrl": {
+                    "type": "string",
+                    "default": "https://api.router.tetrate.ai/v1",
+                    "markdownDescription": "Base URL of the OpenAI-compatible Agent Router endpoint. Change this to target a self-hosted or Enterprise deployment; the URL must end in `/v1`.",
+                    "pattern": "^\\s*(https?://\\S+)?\\s*$",
+                    "patternErrorMessage": "Must be an http(s) URL."
+                },
+                "tetrate-model-provider.modelFilter": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": [],
+                    "markdownDescription": "Only offer models whose id matches one of these glob patterns, for example `claude-*` or `gpt-5.6-terra`. Leave empty to offer every chat model the API key can reach."
+                },
+                "tetrate-model-provider.requestHeaders": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    },
+                    "default": {},
+                    "markdownDescription": "Extra HTTP headers to send with every request, for example a routing hint or a tenant identifier. Do not put the API key here — it is kept in secret storage."
+                }
+            }
+        }
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run clean && npm run bundle -- --minify",
+        "clean": "rm -rf out",
+        "bundle": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=node20 --sourcemap",
+        "compile": "npm run bundle",
+        "watch": "npm run bundle -- --watch",
+        "icon": "node scripts/build-icon.mjs",
+        "typecheck": "tsc --noEmit",
+        "lint": "eslint src",
+        "test": "vitest run",
+        "package": "vsce package --no-dependencies"
+    },
+    "dependencies": {
+        "openai": "^6.9.0"
+    },
+    "devDependencies": {
+        "@eslint/js": "^9.39.0",
+        "@resvg/resvg-js": "^2.6.2",
+        "@types/node": "^22.20.0",
+        "@types/vscode": "1.106.0",
+        "@vscode/vsce": "^3.6.0",
+        "esbuild": "^0.25.10",
+        "eslint": "^9.39.0",
+        "typescript": "^5.9.3",
+        "typescript-eslint": "^8.46.0",
+        "vitest": "^3.2.4"
+    }
+}
