@@ -19,7 +19,7 @@ export class TetrateChatModelProvider
     private readonly onDidChange = new vscode.EventEmitter<void>();
     readonly onDidChangeLanguageModelChatInformation = this.onDidChange.event;
 
-    /** Keyed by base URL + key so a settings change cannot serve stale models. */
+    /** Keyed by base URL and filter so a settings change cannot serve stale models. */
     private cache?: { key: string; models: vscode.LanguageModelChatInformation[] };
 
     constructor(
