@@ -26,12 +26,20 @@ VS Code 1.106 is the floor because `LanguageModelDataPart`, which carries image 
 
 ## Installation
 
+### From the Marketplace
+
+Open the Extensions view, search for **Tetrate Agent Router Model Provider**, and install it. Or from a terminal:
+
+```bash
+code --install-extension tetrate.tetrate-model-provider
+```
+
 ### From a VSIX
 
 ```bash
 npm install
 npm run package
-code --install-extension tetrate-model-provider-0.1.1.vsix
+code --install-extension tetrate-model-provider-0.2.0.vsix
 ```
 
 Alternatively, open the Extensions view, choose **Install from VSIX…** from the `⋯` menu, and select the file.
@@ -60,11 +68,13 @@ Secret storage is per-machine and does not sync across Settings Sync.
 
 ## Configuration
 
-| Setting | Type | Default | Purpose |
-| --- | --- | --- | --- |
-| `tetrate-model-provider.baseUrl` | string | `https://api.router.tetrate.ai/v1` | The OpenAI-compatible endpoint to call. |
-| `tetrate-model-provider.modelFilter` | string[] | `[]` | Glob patterns limiting which models are offered. Empty offers every chat model. |
-| `tetrate-model-provider.requestHeaders` | object | `{}` | Extra HTTP headers sent with every request. |
+| Setting | Type | Default | Scope | Purpose |
+| --- | --- | --- | --- | --- |
+| `tetrate-model-provider.baseUrl` | string | `https://api.router.tetrate.ai/v1` | machine | The OpenAI-compatible endpoint to call. |
+| `tetrate-model-provider.modelFilter` | string[] | `[]` | window | Glob patterns limiting which models are offered. Empty offers every chat model. |
+| `tetrate-model-provider.requestHeaders` | object | `{}` | machine | Extra HTTP headers sent with every request. |
+
+`baseUrl` and `requestHeaders` are machine-scoped, so they can be set in User settings but not in a workspace or folder `settings.json`. Both decide where the API key is sent, and a cloned repository must not be able to point it somewhere else. `modelFilter` only narrows the picker, so it stays settable per workspace.
 
 Changing any of these reloads the model list. **Tetrate Agent Router: Refresh Model List** does the same on demand.
 
@@ -112,7 +122,7 @@ Use `requestHeaders` for a routing hint or a tenant identifier required by a sel
 }
 ```
 
-Do not put the API key here. It belongs in secret storage, and settings files are frequently committed to source control.
+Do not put the API key here. It belongs in secret storage, and settings files are frequently committed to source control. An `Authorization` entry is discarded: that header is always derived from the stored key.
 
 ## Commands
 
@@ -377,4 +387,4 @@ The API key is sent as a bearer token to the configured base URL only.
 
 Apache-2.0. See [LICENSE](LICENSE).
 
-This is not an official Tetrate product. Usage is billed to the configured Agent Router account at that service's rates.
+Usage is billed to the configured Agent Router account at that service's rates.

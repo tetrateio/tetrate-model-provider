@@ -70,8 +70,8 @@ export async function fetchApiModels(
     const response = await request(
         `${baseUrl}/models`,
         {
-            Authorization: `Bearer ${apiKey}`,
             ...headers,
+            Authorization: `Bearer ${apiKey}`,
         },
         token
     );

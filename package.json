@@ -3,15 +3,36 @@
     "publisher": "tetrate",
     "displayName": "Tetrate Agent Router Model Provider",
     "description": "Provides language models from Tetrate Agent Router Service to VS Code chat and to other extensions",
-    "version": "0.1.1",
+    "version": "0.2.0",
     "license": "Apache-2.0",
     "icon": "images/icon.png",
+    "galleryBanner": {
+        "color": "#1B1B1F",
+        "theme": "dark"
+    },
     "repository": {
         "type": "git",
         "url": "https://github.com/tetrateio/tetrate-model-provider.git"
     },
+    "homepage": "https://github.com/tetrateio/tetrate-model-provider#readme",
+    "bugs": {
+        "url": "https://github.com/tetrateio/tetrate-model-provider/issues"
+    },
+    "qna": "https://github.com/tetrateio/tetrate-model-provider/issues",
+    "pricing": "Free",
     "engines": {
         "vscode": "^1.106.0"
+    },
+    "extensionKind": [
+        "ui",
+        "workspace"
+    ],
+    "capabilities": {
+        "untrustedWorkspaces": {
+            "supported": true,
+            "description": "The extension reads no workspace content. The settings that carry the API key to an endpoint are machine-scoped, so a workspace cannot redirect it."
+        },
+        "virtualWorkspaces": true
     },
     "categories": [
         "AI",
@@ -60,7 +81,8 @@
                 "tetrate-model-provider.baseUrl": {
                     "type": "string",
                     "default": "https://api.router.tetrate.ai/v1",
-                    "markdownDescription": "Base URL of the OpenAI-compatible Agent Router endpoint. Change this to target a self-hosted or Enterprise deployment; the URL must end in `/v1`.",
+                    "scope": "machine",
+                    "markdownDescription": "Base URL of the OpenAI-compatible Agent Router endpoint. Change this to target a self-hosted or Enterprise deployment; the URL must end in `/v1`.\n\nMachine-scoped: settable in User settings only. The API key is sent to this host, so a workspace is not allowed to redirect it.",
                     "pattern": "^\\s*(https?://\\S+)?\\s*$",
                     "patternErrorMessage": "Must be an http(s) URL."
                 },
@@ -78,22 +100,26 @@
                         "type": "string"
                     },
                     "default": {},
-                    "markdownDescription": "Extra HTTP headers to send with every request, for example a routing hint or a tenant identifier. Do not put the API key here — it is kept in secret storage."
+                    "scope": "machine",
+                    "markdownDescription": "Extra HTTP headers to send with every request, for example a routing hint or a tenant identifier. Do not put the API key here — it is kept in secret storage.\n\nMachine-scoped: settable in User settings only. `Authorization` cannot be set here; it is always derived from the stored key."
                 }
             }
         }
     },
     "scripts": {
-        "vscode:prepublish": "npm run clean && npm run bundle -- --minify",
+        "vscode:prepublish": "npm run clean && npm run bundle:prod",
         "clean": "rm -rf out",
-        "bundle": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=node20 --sourcemap",
+        "esbuild": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=node20",
+        "bundle": "npm run esbuild -- --sourcemap",
+        "bundle:prod": "npm run esbuild -- --minify",
         "compile": "npm run bundle",
         "watch": "npm run bundle -- --watch",
         "icon": "node scripts/build-icon.mjs",
         "typecheck": "tsc --noEmit",
         "lint": "eslint src",
         "test": "vitest run",
-        "package": "vsce package --no-dependencies"
+        "package": "vsce package --no-dependencies",
+        "publish": "vsce publish --no-dependencies"
     },
     "dependencies": {
         "openai": "^6.9.0"

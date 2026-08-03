@@ -5,6 +5,7 @@ import {
     isIncludedByFilter,
     matchesPattern,
     normalizeBaseUrl,
+    sanitizeHeaders,
 } from './config';
 
 describe('normalizeBaseUrl', () => {
@@ -83,5 +84,24 @@ describe('isIncludedByFilter', () => {
         expect(isIncludedByFilter('claude-sonnet-5', filter)).toBe(true);
         expect(isIncludedByFilter('gpt-5-mini', filter)).toBe(true);
         expect(isIncludedByFilter('gemini-2.5-flash', filter)).toBe(false);
+    });
+});
+
+describe('sanitizeHeaders', () => {
+    it('keeps ordinary headers', () => {
+        expect(sanitizeHeaders({ 'X-Tenant-Id': 'team-platform' })).toEqual({
+            'X-Tenant-Id': 'team-platform',
+        });
+    });
+
+    it('drops Authorization whatever its casing or padding', () => {
+        expect(
+            sanitizeHeaders({
+                Authorization: 'Bearer attacker',
+                authorization: 'Bearer attacker',
+                ' AUTHORIZATION ': 'Bearer attacker',
+                'X-Tenant-Id': 'team-platform',
+            })
+        ).toEqual({ 'X-Tenant-Id': 'team-platform' });
     });
 });

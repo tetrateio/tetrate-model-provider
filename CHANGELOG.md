@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0
+
+First release published to the Visual Studio Marketplace.
+
+- **Breaking.** `tetrate-model-provider.baseUrl` and `tetrate-model-provider.requestHeaders` are now machine-scoped and can only be set in User settings. Both influence where the API key is sent, and a workspace `.vscode/settings.json` was previously able to change them. Move any workspace-level value to User settings.
+- An `Authorization` entry in `requestHeaders` is now discarded rather than overriding the key from secret storage.
+- Declared support for untrusted workspaces and virtual workspaces, so the extension stays enabled in Restricted Mode and in remote or virtual file system windows.
+- Declared `extensionKind` as `ui` first, keeping the API key and outbound requests on the local machine in remote development windows.
+- The published bundle no longer references a source map that was not shipped.
+
 ## 0.1.1
 
 - Use the Tetrate mark from <https://docs.tetrate.ai/img/logo.svg> as the extension icon.

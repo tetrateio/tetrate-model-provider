@@ -19,11 +19,27 @@ export function getConfig(): ProviderConfig {
         modelFilter: (config.get<string[]>('modelFilter') ?? []).filter(
             (pattern) => pattern.trim().length > 0
         ),
-        requestHeaders: config.get<Record<string, string>>(
-            'requestHeaders',
-            {}
+        requestHeaders: sanitizeHeaders(
+            config.get<Record<string, string>>('requestHeaders', {})
         ),
     };
+}
+
+/**
+ * `Authorization` is always derived from the key in secret storage. Letting a
+ * settings value replace it would send a different credential, or none at all,
+ * with nothing in the UI to show that it happened.
+ */
+const RESERVED_HEADERS = new Set(['authorization']);
+
+export function sanitizeHeaders(
+    headers: Record<string, string>
+): Record<string, string> {
+    return Object.fromEntries(
+        Object.entries(headers).filter(
+            ([name]) => !RESERVED_HEADERS.has(name.trim().toLowerCase())
+        )
+    );
 }
 
 /**
