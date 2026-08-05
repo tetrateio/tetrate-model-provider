@@ -72,6 +72,15 @@ describe('matchesPattern', () => {
     it('handles a pattern that is only a wildcard', () => {
         expect(matchesPattern('anything-at-all', '*')).toBe(true);
     });
+
+    it('gives the same answer on every call for a reused pattern', () => {
+        // Patterns are compiled once and shared, so a stateful expression
+        // would make the second call disagree with the first.
+        for (let i = 0; i < 3; i++) {
+            expect(matchesPattern('claude-opus-5', 'claude-*')).toBe(true);
+            expect(matchesPattern('gpt-5-mini', 'claude-*')).toBe(false);
+        }
+    });
 });
 
 describe('isIncludedByFilter', () => {

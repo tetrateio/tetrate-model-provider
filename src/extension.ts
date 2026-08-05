@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 
+import { clearPublicCatalogCache } from './catalogCache';
 import {
     CONFIG_SECTION,
     DEFAULT_BASE_URL,
@@ -9,7 +10,12 @@ import {
     VENDOR,
 } from './config';
 import { TetrateChatModelProvider } from './provider';
-import { deleteApiKey, getApiKey, promptForApiKey } from './secrets';
+import {
+    API_KEY_SECRET,
+    deleteApiKey,
+    getApiKey,
+    promptForApiKey,
+} from './secrets';
 
 export function activate(context: vscode.ExtensionContext) {
     const log = vscode.window.createOutputChannel('Tetrate Agent Router', {
@@ -78,6 +84,9 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand(
             'tetrate-model-provider.refreshModels',
             async () => {
+                // An explicit refresh should outrank the catalog's day-long
+                // TTL, otherwise new metadata stays invisible until it lapses.
+                await clearPublicCatalogCache(context.globalState);
                 provider.invalidate();
                 if (!(await getApiKey(context))) {
                     vscode.window.showWarningMessage(
@@ -99,8 +108,13 @@ export function activate(context: vscode.ExtensionContext) {
         }),
 
         // Keeps a key change made in another window from leaving this one with a
-        // stale model list.
-        context.secrets.onDidChange(() => provider.invalidate())
+        // stale model list. The event covers every secret this extension owns,
+        // so filter rather than re-querying for an unrelated key.
+        context.secrets.onDidChange((event) => {
+            if (event.key === API_KEY_SECRET) {
+                provider.invalidate();
+            }
+        })
     );
 }
 

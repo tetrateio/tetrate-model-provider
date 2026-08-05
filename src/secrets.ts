@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 
-const API_KEY_SECRET = 'tetrate-model-provider.agentRouterApiKey';
+export const API_KEY_SECRET = 'tetrate-model-provider.agentRouterApiKey';
 
 export async function getApiKey(
     context: vscode.ExtensionContext
@@ -47,20 +47,4 @@ export async function promptForApiKey(
 
     await storeApiKey(context, apiKey);
     return apiKey.trim();
-}
-
-/**
- * Returns a usable key, prompting only when allowed to. `silent` mirrors
- * {@link vscode.PrepareLanguageModelChatModelOptions.silent}: VS Code resolves
- * models in the background at startup and must not raise a dialog then.
- */
-export async function resolveApiKey(
-    context: vscode.ExtensionContext,
-    silent: boolean
-): Promise<string | undefined> {
-    const existing = await getApiKey(context);
-    if (existing || silent) {
-        return existing;
-    }
-    return promptForApiKey(context);
 }

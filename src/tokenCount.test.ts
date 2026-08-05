@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 
 import {
     countTokens,
+    estimateBinaryTokens,
     estimateTextTokens,
     TOKENS_PER_IMAGE,
     TOKENS_PER_MESSAGE,
@@ -17,6 +18,23 @@ describe('estimateTextTokens', () => {
     it('grows with input length', () => {
         expect(estimateTextTokens('a'.repeat(350))).toBe(100);
         expect(estimateTextTokens('a'.repeat(700))).toBe(200);
+    });
+});
+
+describe('estimateBinaryTokens', () => {
+    it('is zero for empty data and rounds up otherwise', () => {
+        expect(estimateBinaryTokens(new Uint8Array(0))).toBe(0);
+        expect(estimateBinaryTokens(new Uint8Array(4))).toBe(2);
+    });
+
+    it('never undercounts multi-byte text', () => {
+        // Measuring bytes rather than decoding is the point; where the two
+        // differ the byte count is the larger, which is the safe direction.
+        const text = '→'.repeat(100); // three bytes each
+        const data = new TextEncoder().encode(text);
+        expect(estimateBinaryTokens(data)).toBeGreaterThanOrEqual(
+            estimateTextTokens(text)
+        );
     });
 });
 
@@ -53,6 +71,18 @@ describe('countTokens', () => {
         expect(countTokens(message)).toBe(
             TOKENS_PER_MESSAGE + TOKENS_PER_IMAGE + 100
         );
+    });
+
+    it('measures a non-image data part without decoding it', () => {
+        const message = {
+            role: vscode.LanguageModelChatMessageRole.User,
+            content: [
+                vscode.LanguageModelDataPart.text('a'.repeat(350), 'text/plain'),
+            ],
+            name: undefined,
+        } as vscode.LanguageModelChatRequestMessage;
+
+        expect(countTokens(message)).toBe(TOKENS_PER_MESSAGE + 100);
     });
 
     it('counts a tool call name and its arguments', () => {
