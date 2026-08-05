@@ -1,0 +1,37 @@
+name: Marketplace identity
+
+# A one-time setup helper, kept because it is needed again whenever the
+# publishing identity is recreated.
+#
+# The Marketplace holds its own identity record for the publishing identity,
+# separate from both the Entra object id and the Azure resource id, and it is
+# the only one accepted when adding a publisher member. A freshly created
+# identity has no such record until something authenticates as it, which is
+# what this call does. See the release section of DEVELOPMENT.md.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  lookup:
+    runs-on: ubuntu-latest
+    # Must match the environment in the identity's federated credential.
+    environment: marketplace-publish
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      # 499b84ac-1321-427f-aa17-267ca6975798 is Azure DevOps's well-known Entra
+      # application id, the same in every tenant.
+      - name: Read the Azure DevOps profile for this identity
+        run: |
+          az rest \
+            --url https://app.vssps.visualstudio.com/_apis/profile/profiles/me \
+            --resource 499b84ac-1321-427f-aa17-267ca6975798
