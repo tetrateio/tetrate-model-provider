@@ -12,10 +12,17 @@ on:
 
 permissions:
   contents: write
+  # Lets the runner mint the OIDC token that azure/login exchanges for an
+  # Entra ID credential. Declaring `permissions` at all replaces the default
+  # set, so `contents: write` above has to stay for the release upload.
+  id-token: write
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # Must match the environment named in the managed identity's federated
+    # credential, or Entra rejects the token exchange. See DEVELOPMENT.md.
+    environment: marketplace-publish
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -46,14 +53,29 @@ jobs:
           name: vsix
           path: '*.vsix'
 
-      # Azure DevOps retires global PATs on 2026-12-01. After that VSCE_PAT
-      # stops working and this step needs `vsce publish --azure-credential`
-      # against a Microsoft Entra ID workload identity instead.
+      # Authentication is a Microsoft Entra ID workload identity, federated to
+      # this repository's OIDC token, so there is no secret to rotate. It also
+      # outlives the PAT this used to carry: Azure DevOps retires global PATs
+      # on 2026-12-01, and Marketplace publishing required exactly that kind.
+      #
+      # vsce resolves its credential through a chain that reaches the Azure CLI
+      # session, so signing in here is what makes --azure-credential work.
+      - name: Sign in to Azure
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry-run != true
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          # The identity publishes to the Marketplace and touches no Azure
+          # resources, so it needs no subscription.
+          allow-no-subscriptions: true
+
+      # --skip-duplicate makes a re-run safe. A Marketplace version can never
+      # be reused, so without it a job that published and then failed further
+      # down could not be retried at all.
       - name: Publish to the Visual Studio Code Marketplace
         if: startsWith(github.ref, 'refs/tags/v') && inputs.dry-run != true
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: npx vsce publish --no-dependencies --packagePath *.vsix
+        run: npx vsce publish --no-dependencies --packagePath *.vsix --azure-credential --skip-duplicate
 
       # The release usually already exists, as a draft written by hand before
       # the tag was pushed. Creating it again would fail, and its notes are
