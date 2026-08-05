@@ -3,7 +3,7 @@
     "publisher": "tetrate",
     "displayName": "Tetrate Agent Router Model Provider",
     "description": "Provides language models from Tetrate Agent Router Service to VS Code chat and to other extensions",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "license": "Apache-2.0",
     "icon": "images/icon.png",
     "galleryBanner": {

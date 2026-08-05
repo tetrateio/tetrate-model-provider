@@ -44,9 +44,7 @@ export function countContentTokens(parts: ReadonlyArray<unknown>): number {
         } else if (part instanceof vscode.LanguageModelDataPart) {
             tokens += part.mimeType.startsWith('image/')
                 ? TOKENS_PER_IMAGE
-                : estimateTextTokens(
-                      new TextDecoder().decode(part.data)
-                  );
+                : estimateBinaryTokens(part.data);
         } else if (typeof part === 'string') {
             tokens += estimateTextTokens(part);
         }
@@ -60,6 +58,19 @@ export function estimateTextTokens(text: string): number {
         return 0;
     }
     return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
+/**
+ * Byte length stands in for character count. Decoding a multi-megabyte
+ * attachment purely to measure it is wasted work, and where the two differ —
+ * multi-byte UTF-8 — the byte count is the larger of the pair, which is the
+ * direction this estimate deliberately errs in anyway.
+ */
+export function estimateBinaryTokens(data: Uint8Array): number {
+    if (data.byteLength === 0) {
+        return 0;
+    }
+    return Math.ceil(data.byteLength / CHARS_PER_TOKEN);
 }
 
 function safeStringify(value: unknown): string {

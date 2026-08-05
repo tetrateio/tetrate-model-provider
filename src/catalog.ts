@@ -39,6 +39,31 @@ export const PUBLIC_CATALOG_URL =
 export const FALLBACK_CONTEXT_WINDOW = 128_000;
 export const FALLBACK_MAX_OUTPUT_TOKENS = 16_384;
 
+/**
+ * Floors for the two budgets. A model whose advertised context window is
+ * smaller than these is unusable anyway; reporting zero or a negative number
+ * would break VS Code's budgeting rather than degrade it.
+ */
+export const MIN_INPUT_TOKENS = 1024;
+export const MIN_OUTPUT_TOKENS = 256;
+
+/**
+ * `/models` gates the whole model picker, so it gets a real budget and a retry.
+ *
+ * The public catalog only supplies nice-to-have metadata and is allowed to
+ * lose — {@link FALLBACK_CONTEXT_WINDOW} and its siblings exist precisely so
+ * discovery never waits on it. Its budget is nonetheless generous, because the
+ * two run in parallel: anything at or below the `/models` allowance costs no
+ * wall-clock, and a cold fetch of the live catalog measures around a second.
+ */
+export const MODELS_TIMEOUT_MS = 15_000;
+export const MODELS_ATTEMPTS = 3;
+export const CATALOG_TIMEOUT_MS = 8_000;
+export const CATALOG_ATTEMPTS = 1;
+
+/** Statuses worth a second try: transient by definition, and this is a GET. */
+const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+
 const NON_CHAT_ID_PATTERN =
     /(^|[-/])(embed|embedding|rerank|moderation|whisper|tts|dall-e|image|vision-encoder)([-.]|$)/i;
 
@@ -61,28 +86,48 @@ const NON_CONVERSATIONAL_MODES = new Set([
     'audio_speech',
 ]);
 
+/**
+ * A request that ran out of time rather than being cancelled by the user. The
+ * distinction matters upstream: a cancellation is silent, a timeout is
+ * something the user needs told about.
+ */
+export class RequestTimeoutError extends Error {
+    constructor(
+        readonly url: string,
+        readonly timeoutMs: number
+    ) {
+        super(`GET ${url} timed out after ${timeoutMs} ms`);
+        this.name = 'RequestTimeoutError';
+    }
+}
+
 export async function fetchApiModels(
     baseUrl: string,
     apiKey: string,
     headers: Record<string, string>,
     token?: vscode.CancellationToken
 ): Promise<ApiModel[]> {
+    const url = `${baseUrl}/models`;
     const response = await request(
-        `${baseUrl}/models`,
+        url,
         {
             ...headers,
             Authorization: `Bearer ${apiKey}`,
         },
-        token
+        {
+            timeoutMs: MODELS_TIMEOUT_MS,
+            attempts: MODELS_ATTEMPTS,
+            token,
+        }
     );
 
     if (!response.ok) {
         throw new Error(
-            `Agent Router returned ${response.status} ${response.statusText} for GET ${baseUrl}/models${await describeErrorBody(response)}`
+            `Agent Router returned ${response.status} ${response.statusText} for GET ${url}${await describeErrorBody(response)}`
         );
     }
 
-    const body = (await response.json()) as { data?: ApiModel[] };
+    const body = await readJson<{ data?: ApiModel[] }>(response, url);
     return (body.data ?? []).filter(
         (model): model is ApiModel => typeof model?.id === 'string'
     );
@@ -92,29 +137,58 @@ export async function fetchApiModels(
  * Best-effort metadata lookup. The catalog is public and unauthenticated, and a
  * self-hosted deployment may not be represented in it at all, so every failure
  * here degrades to fallback numbers instead of breaking model discovery.
+ *
+ * Returns undefined — rather than an empty list — when the fetch did not
+ * succeed, so a caller holding a stale copy can tell "the catalog is empty"
+ * from "we could not reach the catalog" and keep serving what it has.
  */
+export async function fetchPublicCatalogModels(
+    token?: vscode.CancellationToken
+): Promise<CatalogModel[] | undefined> {
+    try {
+        const url = `${PUBLIC_CATALOG_URL}?limit=500`;
+        const response = await request(
+            url,
+            {},
+            {
+                timeoutMs: CATALOG_TIMEOUT_MS,
+                attempts: CATALOG_ATTEMPTS,
+                token,
+            }
+        );
+        if (!response.ok) {
+            return undefined;
+        }
+        const body = await readJson<{ models?: CatalogModel[] }>(
+            response,
+            url
+        );
+        return (body.models ?? []).filter(
+            (model): model is CatalogModel => typeof model?.model === 'string'
+        );
+    } catch {
+        // Discovery must still work offline or behind a proxy that blocks this
+        // host; the caller falls back to a stale copy or to the defaults.
+        return undefined;
+    }
+}
+
+/** Convenience wrapper that fetches and indexes in one step. */
 export async function fetchPublicCatalog(
     token?: vscode.CancellationToken
 ): Promise<Map<string, CatalogModel>> {
+    return indexCatalog(await fetchPublicCatalogModels(token));
+}
+
+/** Model ids are compared case-insensitively; the catalog is not consistent. */
+export function indexCatalog(
+    models: readonly CatalogModel[] | undefined
+): Map<string, CatalogModel> {
     const byId = new Map<string, CatalogModel>();
-    try {
-        const response = await request(
-            `${PUBLIC_CATALOG_URL}?limit=500`,
-            {},
-            token
-        );
-        if (!response.ok) {
-            return byId;
+    for (const model of models ?? []) {
+        if (typeof model?.model === 'string') {
+            byId.set(model.model.toLowerCase(), model);
         }
-        const body = (await response.json()) as { models?: CatalogModel[] };
-        for (const model of body.models ?? []) {
-            if (typeof model?.model === 'string') {
-                byId.set(model.model.toLowerCase(), model);
-            }
-        }
-    } catch {
-        // Discovery must still work offline or behind a proxy that blocks this
-        // host; the caller falls back to conservative defaults.
     }
     return byId;
 }
@@ -123,7 +197,7 @@ export function toChatInformation(
     apiModel: ApiModel,
     catalogModel: CatalogModel | undefined
 ): vscode.LanguageModelChatInformation {
-    const maxOutputTokens = clampPositive(
+    const declaredOutput = clampPositive(
         catalogModel?.limits?.max_output_tokens,
         FALLBACK_MAX_OUTPUT_TOKENS
     );
@@ -135,8 +209,17 @@ export function toChatInformation(
     // VS Code budgets input separately from output, but the API charges both
     // against one context window, so reserve the output half up front.
     const maxInputTokens = Math.max(
-        1024,
-        contextWindow - Math.min(maxOutputTokens, contextWindow - 1024)
+        MIN_INPUT_TOKENS,
+        contextWindow -
+            Math.min(declaredOutput, contextWindow - MIN_INPUT_TOKENS)
+    );
+
+    // The floor above can push the pair past the window on a model that
+    // advertises an output cap as large as its context. Output yields, since
+    // an over-reserved prompt budget is what produces a hard API error.
+    const maxOutputTokens = Math.max(
+        MIN_OUTPUT_TOKENS,
+        Math.min(declaredOutput, contextWindow - maxInputTokens)
     );
 
     const capabilities = catalogModel?.capabilities ?? [];
@@ -251,22 +334,147 @@ function clampPositive(value: number | undefined, fallback: number): number {
         : fallback;
 }
 
+type RequestOptions = {
+    timeoutMs: number;
+    attempts: number;
+    token?: vscode.CancellationToken;
+};
+
+/**
+ * A GET with a deadline and a bounded retry.
+ *
+ * The deadline is the important half: a host that accepts the connection and
+ * then says nothing — a stalled proxy, a captive portal — would otherwise leave
+ * the caller waiting forever, and neither `fetch` nor VS Code imposes a limit
+ * of its own.
+ */
 async function request(
     url: string,
     headers: Record<string, string>,
+    { timeoutMs, attempts, token }: RequestOptions
+): Promise<Response> {
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+        if (token?.isCancellationRequested) {
+            break;
+        }
+
+        try {
+            const response = await attemptRequest(
+                url,
+                headers,
+                timeoutMs,
+                token
+            );
+            if (attempt === attempts || !RETRYABLE_STATUS.has(response.status)) {
+                return response;
+            }
+            // Drain the body so the connection can go back to the pool, and
+            // keep the status around in case this was the last useful attempt.
+            const retryAfter = retryAfterMs(response);
+            await response.text().catch(() => undefined);
+            lastError = new Error(
+                `Agent Router returned ${response.status} ${response.statusText} for GET ${url}`
+            );
+            await delay(retryAfter ?? backoffMs(attempt), token);
+        } catch (error) {
+            lastError = error;
+            if (attempt === attempts || token?.isCancellationRequested) {
+                throw error;
+            }
+            await delay(backoffMs(attempt), token);
+        }
+    }
+
+    throw lastError ?? new Error(`GET ${url} was cancelled`);
+}
+
+async function attemptRequest(
+    url: string,
+    headers: Record<string, string>,
+    timeoutMs: number,
     token?: vscode.CancellationToken
 ): Promise<Response> {
     const controller = new AbortController();
+    // VS Code delivers `onCancellationRequested` asynchronously even for a
+    // token that is already cancelled, so check it directly as well; otherwise
+    // the request goes out before the listener ever runs.
+    if (token?.isCancellationRequested) {
+        controller.abort();
+    }
+
+    const timer = setTimeout(
+        () => controller.abort(new RequestTimeoutError(url, timeoutMs)),
+        timeoutMs
+    );
     const subscription = token?.onCancellationRequested(() =>
         controller.abort()
     );
+
     try {
         return await fetch(url, {
             headers: { Accept: 'application/json', ...headers },
             signal: controller.signal,
         });
     } finally {
+        clearTimeout(timer);
         subscription?.dispose();
+    }
+}
+
+/** Exponential with jitter, so a rate-limited window does not retry in lockstep. */
+function backoffMs(attempt: number): number {
+    return 250 * 2 ** (attempt - 1) + Math.floor(Math.random() * 250);
+}
+
+/** Honours `Retry-After` when it is present and short enough to be worth waiting. */
+function retryAfterMs(response: Response): number | undefined {
+    const header = response.headers.get('retry-after');
+    if (!header) {
+        return undefined;
+    }
+    const seconds = Number(header);
+    if (!Number.isFinite(seconds) || seconds < 0 || seconds > 10) {
+        return undefined;
+    }
+    return seconds * 1000;
+}
+
+function delay(ms: number, token?: vscode.CancellationToken): Promise<void> {
+    return new Promise((resolve) => {
+        // Held in an object so `done` can reach both handles no matter which of
+        // the two fires first, without either being in its temporal dead zone.
+        const handles: {
+            timer?: ReturnType<typeof setTimeout>;
+            subscription?: vscode.Disposable;
+        } = {};
+        const done = () => {
+            clearTimeout(handles.timer);
+            handles.subscription?.dispose();
+            resolve();
+        };
+        handles.timer = setTimeout(done, ms);
+        handles.subscription = token?.onCancellationRequested(done);
+    });
+}
+
+/**
+ * A proxy interstitial or a misrouted path answers 200 with HTML, and the bare
+ * `SyntaxError: Unexpected token '<'` that `response.json()` throws for it says
+ * nothing about where it came from.
+ */
+async function readJson<T>(response: Response, url: string): Promise<T> {
+    const text = await response.text();
+    try {
+        return JSON.parse(text) as T;
+    } catch {
+        const contentType =
+            response.headers.get('content-type') ?? 'no content-type';
+        const preview = text.trim().slice(0, 200) || '(empty body)';
+        throw new Error(
+            `Expected JSON from GET ${url} but received ${contentType}: ${preview}`
+        );
     }
 }
 

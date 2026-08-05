@@ -77,6 +77,16 @@ export async function setBaseUrl(baseUrl: string): Promise<void> {
 }
 
 /**
+ * Compiled patterns, reused across the model list and across discoveries. The
+ * filter is applied once per model, so without this every listing recompiles
+ * the same handful of expressions.
+ */
+const compiledPatterns = new Map<string, RegExp>();
+
+/** Bounds the cache against a pathological filter; patterns are few in practice. */
+const MAX_COMPILED_PATTERNS = 256;
+
+/**
  * Matches a model id against a `*`-glob pattern. Nothing else in the pattern is
  * special, so ids containing `.` and `-` compare literally.
  *
@@ -84,12 +94,21 @@ export async function setBaseUrl(baseUrl: string): Promise<void> {
  * which avoids needing a placeholder character to survive the escaping pass.
  */
 export function matchesPattern(id: string, pattern: string): boolean {
-    const expression = pattern
-        .trim()
-        .split('*')
-        .map((chunk) => chunk.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-        .join('.*');
-    return new RegExp(`^${expression}$`, 'i').test(id);
+    let expression = compiledPatterns.get(pattern);
+    if (!expression) {
+        const source = pattern
+            .trim()
+            .split('*')
+            .map((chunk) => chunk.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+            .join('.*');
+        // No `g` flag, so the expression is stateless and safe to share.
+        expression = new RegExp(`^${source}$`, 'i');
+        if (compiledPatterns.size >= MAX_COMPILED_PATTERNS) {
+            compiledPatterns.clear();
+        }
+        compiledPatterns.set(pattern, expression);
+    }
+    return expression.test(id);
 }
 
 export function isIncludedByFilter(id: string, filter: string[]): boolean {
