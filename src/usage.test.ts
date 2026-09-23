@@ -76,13 +76,18 @@ describe('UsageTracker', () => {
         expect(tracker.hasUnpricedRequests).toBe(true);
     });
 
-    it('notifies subscribers on every recorded request', () => {
+    it('notifies subscribers with the request record', () => {
         const tracker = new UsageTracker();
         const listener = vi.fn();
         const subscription = tracker.subscribe(listener);
 
-        tracker.record('a', request(), undefined);
+        tracker.record('a', request({ inputTokens: 1_000_000 }), pricing);
         expect(listener).toHaveBeenCalledTimes(1);
+        expect(listener).toHaveBeenCalledWith({
+            modelId: 'a',
+            usage: request({ inputTokens: 1_000_000 }),
+            cost: 2,
+        });
 
         subscription.dispose();
         tracker.record('a', request(), undefined);

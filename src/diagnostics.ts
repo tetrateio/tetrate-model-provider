@@ -54,9 +54,13 @@ export async function buildStatusReport(
         }
     }
 
+    const profile = Object.entries(config.profiles).find(
+        ([, url]) => url === config.baseUrl
+    )?.[0];
+
     const lines = [
         `Extension version: ${input.version}`,
-        `Base URL: ${config.baseUrl}`,
+        `Base URL: ${config.baseUrl}${profile ? ` (profile: ${profile})` : ''}`,
         `API key: ${keyStored ? 'stored in secret storage' : 'not stored'}`,
         `Models endpoint: ${modelsLine}`,
         `Public catalog: ${

@@ -8,6 +8,8 @@ const config: ProviderConfig = {
     modelFilter: [],
     requestHeaders: {},
     modelOverrides: {},
+    profiles: {},
+    spendWarning: 0,
 };
 
 const base: StatusInput = {
@@ -75,6 +77,22 @@ describe('buildStatusReport', () => {
     it('reports a missing catalog cache as such', async () => {
         const report = await buildStatusReport({ ...base, catalog: undefined });
         expect(report.lines[4]).toBe('Public catalog: not cached yet');
+    });
+
+    it('names the profile the base URL matches', async () => {
+        const report = await buildStatusReport({
+            ...base,
+            config: {
+                ...config,
+                profiles: {
+                    Production: config.baseUrl,
+                    Staging: 'https://staging.internal/v1',
+                },
+            },
+        });
+        expect(report.lines[1]).toBe(
+            `Base URL: ${config.baseUrl} (profile: Production)`
+        );
     });
 
     it('counts overrides and headers', async () => {

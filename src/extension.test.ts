@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { validateBaseUrl } from './extension';
+import { filterFromSelection, validateBaseUrl } from './extension';
 
 describe('validateBaseUrl', () => {
     it('accepts blank input so the default can take over', () => {
@@ -24,5 +24,22 @@ describe('validateBaseUrl', () => {
 
     it('ignores surrounding whitespace', () => {
         expect(validateBaseUrl(' https://x/v1 ')).toBeNull();
+    });
+});
+
+describe('filterFromSelection', () => {
+    it('writes the exact ids for a partial selection', () => {
+        expect(filterFromSelection(3, ['a', 'b'])).toEqual(['a', 'b']);
+    });
+
+    it('clears the filter when everything is selected', () => {
+        // An empty filter keeps offering models added upstream later, which a
+        // frozen list of every current id would not.
+        expect(filterFromSelection(3, ['a', 'b', 'c'])).toEqual([]);
+    });
+
+    it('treats an empty selection as no change', () => {
+        // Writing [] for "none" would mean the opposite: offer everything.
+        expect(filterFromSelection(3, [])).toBeUndefined();
     });
 });

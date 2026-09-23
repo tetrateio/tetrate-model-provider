@@ -55,9 +55,17 @@ type ModelTotals = RequestUsage & {
     unpricedRequests: number;
 };
 
+/** What subscribers receive for each completed request. */
+export type UsageEvent = {
+    modelId: string;
+    usage: RequestUsage;
+    /** Undefined when the model has no known price. */
+    cost: number | undefined;
+};
+
 export class UsageTracker {
     private readonly byModel = new Map<string, ModelTotals>();
-    private readonly listeners = new Set<() => void>();
+    private readonly listeners = new Set<(event: UsageEvent) => void>();
 
     /** Adds one request and returns its cost, when the price is known. */
     record(
@@ -85,13 +93,13 @@ export class UsageTracker {
         this.byModel.set(modelId, totals);
 
         for (const listener of [...this.listeners]) {
-            listener();
+            listener({ modelId, usage, cost });
         }
         return cost;
     }
 
     /** Notifies after every recorded request; returns a disposable. */
-    subscribe(listener: () => void): { dispose(): void } {
+    subscribe(listener: (event: UsageEvent) => void): { dispose(): void } {
         this.listeners.add(listener);
         return {
             dispose: () => {

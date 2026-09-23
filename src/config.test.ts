@@ -8,6 +8,7 @@ import {
     overridesFor,
     sanitizeHeaders,
     sanitizeOverrides,
+    sanitizeProfiles,
 } from './config';
 
 describe('normalizeBaseUrl', () => {
@@ -137,6 +138,37 @@ describe('sanitizeOverrides', () => {
                 c: [1],
                 d: { unknownField: 1 },
                 '': { temperature: 1 },
+            })
+        ).toEqual({});
+    });
+
+    it('accepts a maxTokens request cap', () => {
+        expect(sanitizeOverrides({ m: { maxTokens: 4096 } })).toEqual({
+            m: { maxTokens: 4096 },
+        });
+        expect(sanitizeOverrides({ m: { maxTokens: 0 } })).toEqual({});
+    });
+});
+
+describe('sanitizeProfiles', () => {
+    it('normalizes URLs the way the base URL setting does', () => {
+        expect(
+            sanitizeProfiles({
+                Production: 'https://api.router.tetrate.ai',
+                ' Staging ': 'https://staging.internal/v1/',
+            })
+        ).toEqual({
+            Production: 'https://api.router.tetrate.ai/v1',
+            Staging: 'https://staging.internal/v1',
+        });
+    });
+
+    it('drops blank names, blank URLs, and non-string values', () => {
+        expect(
+            sanitizeProfiles({
+                '': 'https://x/v1',
+                Blank: '   ',
+                Wrong: 42,
             })
         ).toEqual({});
     });

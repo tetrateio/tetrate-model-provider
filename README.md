@@ -71,6 +71,8 @@ Step 2 is optional. The first time VS Code resolves models interactively, for ex
 
 Step 3 is not optional. Models contributed by an extension start out hidden in the chat model picker and do not appear until enabled there.
 
+The same three steps are available as a walkthrough under **Help → Get Started**, titled **Get started with Tetrate Agent Router**.
+
 ### Where the key is stored
 
 The key is held in VS Code [secret storage](https://code.visualstudio.com/api/references/vscode-api#SecretStorage), scoped to the endpoint host: `tetrate-model-provider.agentRouterApiKey:<host>`. It is never written to a settings file, a log, or the output channel. On macOS that means the system Keychain.
@@ -87,6 +89,8 @@ Secret storage is per-machine and does not sync across Settings Sync.
 | `tetrate-model-provider.modelFilter` | string[] | `[]` | window | Glob patterns limiting which models are offered. Empty offers every chat model. |
 | `tetrate-model-provider.modelOverrides` | object | `{}` | window | Per-model budgets and request defaults, keyed by glob pattern. |
 | `tetrate-model-provider.requestHeaders` | object | `{}` | machine | Extra HTTP headers sent with every request. |
+| `tetrate-model-provider.profiles` | object | `{}` | machine | Named endpoints for the **Switch Endpoint** command. |
+| `tetrate-model-provider.spendWarning` | number | `0` | window | Warn once the day's estimated cost reaches this many dollars. `0` disables it. |
 
 `baseUrl` and `requestHeaders` are machine-scoped, so they can be set in User settings but not in a workspace or folder `settings.json`. Both decide where the API key is sent, and a cloned repository must not be able to point it somewhere else. `modelFilter` only narrows the picker, so it stays settable per workspace.
 
@@ -112,6 +116,17 @@ https://router.tare-<tenantID>.tetrate.ai/v1/
 
 A URL that already carries an explicit version segment, such as `/v2`, is left alone. Both `http` and `https` are accepted, which allows a local proxy on `http://localhost:8080`.
 
+Endpoints that are switched between regularly belong in `profiles`, after which **Tetrate Agent Router: Switch Endpoint** changes between them from a quick pick. Each endpoint keeps its own API key, so switching never sends one host's credential to another:
+
+```jsonc
+{
+    "tetrate-model-provider.profiles": {
+        "Production": "https://api.router.tetrate.ai/v1",
+        "Staging": "https://router.tare-staging.tetrate.ai/v1"
+    }
+}
+```
+
 ### Filtering the model list
 
 The hosted catalog currently exposes more than 160 conversational models. To keep the picker manageable, restrict it by glob pattern:
@@ -123,6 +138,8 @@ The hosted catalog currently exposes more than 160 conversational models. To kee
 ```
 
 Only `*` is special and it matches within and across segments. Everything else, including `.` and `-`, compares literally, and matching is case-insensitive. A model is offered when it matches at least one pattern.
+
+**Tetrate Agent Router: Choose Models** edits the same setting from a checkbox list of every model the key can reach. The selection is written as exact ids, replacing any glob patterns; selecting everything clears the filter, which keeps newly added upstream models appearing on their own.
 
 ### Adding request headers
 
@@ -154,7 +171,8 @@ Do not put the API key here. It belongs in secret storage, and settings files ar
 | Field | Effect |
 | --- | --- |
 | `contextWindow` | Replaces the catalog's context window when the token budgets are computed. |
-| `maxOutputTokens` | Replaces the catalog's output limit. |
+| `maxOutputTokens` | Replaces the catalog's output limit in the advertised budget. Nothing is sent with the request. |
+| `maxTokens` | A hard output cap, sent as `max_tokens` with every request. Some OpenAI reasoning models reject `max_tokens` in favour of `max_completion_tokens`; for those, use `modelOptions` instead. |
 | `temperature` | Sent with every request to matching models. 0 to 2. |
 | `reasoningEffort` | Sent as `reasoning_effort` with every request. One of `minimal`, `low`, `medium`, `high`. Only meaningful for reasoning models. |
 
@@ -165,12 +183,14 @@ The budget fields exist for deployments the public catalog does not describe, wh
 The billed token counts are requested with every streamed response, accumulated per model, and combined with the public catalog's prices:
 
 - The status bar shows the running session cost after the first completed request, or the token count when no price is known. Clicking it opens the breakdown.
-- **Tetrate Agent Router: Show Session Usage** prints one line per model: requests, input tokens with the cached share, output tokens with the reasoning share, and cost.
-- Each completed request is logged to the output channel with its counts and cost.
+- **Tetrate Agent Router: Show Session Usage** prints one line per model for the session, followed by today's and the last seven days' totals.
+- Each completed request is logged to the output channel with its counts, cost, time to first output, and total duration.
+
+Daily aggregates are kept in extension storage for 62 days, so today's figure spans window reloads. When `spendWarning` is set, one warning per window is raised once today's estimated cost reaches the threshold, which puts a brake on a runaway agent session.
 
 Models with known prices also show them in the model picker, as dollars per million input and output tokens.
 
-Costs are estimates computed from the public catalog's current prices; the Agent Router dashboard is the billing authority. A model absent from the catalog is counted but reported as having no known price. Totals cover the current window only and reset on reload.
+Costs are estimates computed from the public catalog's current prices; the Agent Router dashboard is the billing authority. A model absent from the catalog is counted but reported as having no known price. Two windows recording at the same moment can undercount, since each writes its own copy of the day's totals.
 
 ## Commands
 
@@ -180,8 +200,10 @@ Costs are estimates computed from the public catalog's current prices; the Agent
 | Tetrate Agent Router: Clear Agent Router API Key | Remove the stored key for the configured endpoint. |
 | Tetrate Agent Router: Set Base URL | Change the endpoint, with validation. |
 | Tetrate Agent Router: Refresh Model List | Discard the cached model list and re-query the endpoint. |
-| Tetrate Agent Router: Show Session Usage | Print the tokens and cost accumulated this session, per model. |
+| Tetrate Agent Router: Show Session Usage | Print the tokens and cost for this session, today, and the last seven days. |
 | Tetrate Agent Router: Show Connection Status | Check the endpoint, the key, and the catalog cache in one report. |
+| Tetrate Agent Router: Switch Endpoint | Change the base URL from the profiles quick pick. |
+| Tetrate Agent Router: Choose Models | Edit the model filter from a checkbox list of reachable models. |
 
 ## Using the models from another extension
 
@@ -356,7 +378,7 @@ Image cost is a flat estimate, since real cost scales with resolution and comput
 
 ## Behaviour and limitations
 
-- **Output length.** No token cap is sent, so each model's server-side default applies. Sending `max_tokens` unconditionally risks rejection on models that require `max_completion_tokens` instead. Set either through `modelOptions`.
+- **Output length.** No token cap is sent by default, so each model's server-side default applies. Sending `max_tokens` unconditionally risks rejection on models that require `max_completion_tokens` instead. A per-model cap is set with `maxTokens` in `modelOverrides`, or either parameter through `modelOptions`.
 - **Images.** VS Code offers image attachments only for models that report vision support. The provider forwards every image part it receives as a base64 data URL and does not check the capability itself, except for images inside tool results, which are forwarded only to models that report image input. Audio and PDF inputs are not forwarded, because the chat-completions content model this endpoint exposes has no place for them.
 - **Reasoning traces** are not surfaced. The provider response part types have no thinking part in the supported VS Code versions. A default `reasoning_effort` can be set per model through `modelOverrides`, and reasoning tokens are reported in the usage breakdown.
 - **Prompt caching** is not configured explicitly. Where the upstream provider applies it automatically, it still takes effect.

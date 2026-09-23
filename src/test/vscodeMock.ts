@@ -136,8 +136,17 @@ export const workspace = {
     },
 };
 
+export const Uri = {
+    parse: (value: string) => ({ toString: () => value }),
+};
+
+export const env = {
+    openExternal: () => Promise.resolve(true),
+};
+
 export const window = {
     showInputBox: () => Promise.resolve(undefined),
+    showQuickPick: () => Promise.resolve(undefined),
     showErrorMessage: () => Promise.resolve(undefined),
     showWarningMessage: () => Promise.resolve(undefined),
     showInformationMessage: () => Promise.resolve(undefined),

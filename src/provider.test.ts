@@ -489,12 +489,39 @@ describe('provideLanguageModelChatResponse', () => {
         );
     });
 
-    it('records nothing when the gateway sends no usage block', async () => {
+    it('logs timing but records nothing when the gateway sends no usage block', async () => {
         const h = harness({ steps: [text('hi'), finish('stop')] });
 
         await h.run();
 
         expect(h.provider.usage.requestCount).toBe(0);
+        expect(h.log.info).toHaveBeenCalledWith(
+            expect.stringMatching(
+                /completed \(first output \d+\.\ds, total \d+\.\ds\); no usage block received/
+            )
+        );
+    });
+
+    it('appends the request timing to the usage log line', async () => {
+        const h = harness({
+            steps: [
+                text('hi'),
+                finish('stop'),
+                usageChunk({
+                    prompt_tokens: 10,
+                    completion_tokens: 5,
+                    total_tokens: 15,
+                }),
+            ],
+        });
+
+        await h.run();
+
+        expect(h.log.info).toHaveBeenCalledWith(
+            expect.stringMatching(
+                /10 in \+ 5 out \(first output \d+\.\ds, total \d+\.\ds\)/
+            )
+        );
     });
 
     it('prices a request from the cached public catalog', async () => {
@@ -537,7 +564,11 @@ describe('provideLanguageModelChatResponse', () => {
             configValues: Record<string, unknown>;
         };
         configValues.modelOverrides = {
-            'claude-*': { temperature: 0.1, reasoningEffort: 'high' },
+            'claude-*': {
+                temperature: 0.1,
+                reasoningEffort: 'high',
+                maxTokens: 2048,
+            },
         };
         try {
             const h = harness({ steps: [finish('stop')] });
@@ -547,6 +578,7 @@ describe('provideLanguageModelChatResponse', () => {
             expect(h.requests[0]?.body).toMatchObject({
                 temperature: 0.1,
                 reasoning_effort: 'high',
+                max_tokens: 2048,
             });
         } finally {
             delete configValues.modelOverrides;

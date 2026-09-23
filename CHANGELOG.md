@@ -11,6 +11,12 @@ Usage visibility and per-model control. No existing settings changed, and no act
 - A `modelOverrides` setting, keyed by the same glob patterns as `modelFilter`. `contextWindow` and `maxOutputTokens` replace catalog values, which gives real budgets to models the public catalog does not describe. `temperature` and `reasoningEffort` are sent with every request to matching models and take precedence over a calling extension's `modelOptions`.
 - A **Show Connection Status** command. The extension version, the base URL, whether a key is stored, a live check of the models endpoint with reachable and offered counts, and the age of the cached catalog are reported in one place.
 - Images returned by tools are forwarded to models that accept image input. A `tool` message is text only in the OpenAI protocol, so each image travels in the user message that follows it, with a note in the tool text marking where it went. Text-only models keep the previous placeholder, and an agent that captures screenshots can now have them seen.
+- Usage history that survives reloads. Daily aggregates are kept for 62 days, and **Show Session Usage** now reports today and the last seven days alongside the session. A `spendWarning` setting raises one warning per window when the day's estimated cost passes a dollar threshold.
+- A `profiles` setting naming endpoints, and a **Switch Endpoint** command that switches between them from a quick pick. Each endpoint keeps its own API key.
+- A **Choose Models** command that edits the model filter from a checkbox list of every model the key can reach, instead of hand-written glob patterns. Selecting everything clears the filter.
+- A `maxTokens` field in `modelOverrides`, sent as `max_tokens` with every request to matching models. Unlike `maxOutputTokens`, which only adjusts the advertised budget, this is a hard output cap for cost control.
+- Request timing in the log. Every completed request logs its time to first output and total duration alongside the token counts, and a completion with no usage block is now logged too.
+- A getting-started walkthrough (create a key, store it, enable models), a management command on the provider's row in the Language Models editor, and **Open Dashboard** actions on the messages shown when no key is stored.
 
 ### Changed
 

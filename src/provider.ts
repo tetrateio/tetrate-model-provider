@@ -311,6 +311,8 @@ export class TetrateChatModelProvider
             );
 
             const toolCalls = new ToolCallAccumulator(`call_${this.turn++}`);
+            const startedAt = Date.now();
+            let firstOutputAt: number | undefined;
             let finishReason: string | undefined;
             let usage: OpenAI.Completions.CompletionUsage | undefined;
             let reportedText = 0;
@@ -339,6 +341,9 @@ export class TetrateChatModelProvider
                 if (delta?.tool_calls?.length) {
                     toolCalls.add(delta.tool_calls);
                     outputStarted = true;
+                }
+                if (outputStarted && firstOutputAt === undefined) {
+                    firstOutputAt = Date.now();
                 }
 
                 // Armed after the chunk is handled so the allowance measures
@@ -382,7 +387,11 @@ export class TetrateChatModelProvider
                 calls.length,
                 progress
             );
-            this.recordUsage(model.id, usage);
+            this.recordUsage(model.id, usage, {
+                startedAt,
+                firstOutputAt,
+                finishedAt: Date.now(),
+            });
         } catch (error) {
             if (stalled) {
                 this.log.error(stalled.message);
@@ -451,15 +460,20 @@ export class TetrateChatModelProvider
     }
 
     /**
-     * Books the billed counts from the stream's usage block. A gateway that
-     * ignores `stream_options` sends none, which is booked as nothing rather
-     * than as a zero-token request.
+     * Books the billed counts from the stream's usage block and logs one
+     * completion line with the request timing. A gateway that ignores
+     * `stream_options` sends no usage, which is booked as nothing rather than
+     * as a zero-token request; the timing is still logged.
      */
     private recordUsage(
         modelId: string,
-        usage: OpenAI.Completions.CompletionUsage | undefined
+        usage: OpenAI.Completions.CompletionUsage | undefined,
+        timing: RequestTiming
     ): void {
         if (!usage) {
+            this.log.info(
+                `${modelId}: completed (${describeTiming(timing)}); no usage block received`
+            );
             return;
         }
         const request: RequestUsage = {
@@ -486,7 +500,7 @@ export class TetrateChatModelProvider
         this.log.info(
             `${modelId}: ${formatTokens(request.inputTokens)} in${cached} + ${formatTokens(request.outputTokens)} out${reasoning}${
                 cost !== undefined ? ` ≈ ${formatCost(cost)}` : ''
-            }`
+            } (${describeTiming(timing)})`
         );
     }
 
@@ -563,10 +577,12 @@ export class TetrateChatModelProvider
     private async reportListFailure(error: unknown): Promise<void> {
         const setKey = 'Set API Key';
         const setUrl = 'Set Base URL';
+        const dashboard = 'Open Dashboard';
         const action = await vscode.window.showErrorMessage(
             `Tetrate Agent Router: could not list models. ${describe(error)}`,
             setKey,
-            setUrl
+            setUrl,
+            dashboard
         );
         if (action === setKey) {
             await vscode.commands.executeCommand(
@@ -575,6 +591,10 @@ export class TetrateChatModelProvider
         } else if (action === setUrl) {
             await vscode.commands.executeCommand(
                 'tetrate-model-provider.setBaseUrl'
+            );
+        } else if (action === dashboard) {
+            await vscode.env.openExternal(
+                vscode.Uri.parse('https://router.tetrate.ai/')
             );
         }
     }
@@ -604,7 +624,28 @@ function overrideParams(
         ...(override.reasoningEffort !== undefined
             ? { reasoning_effort: override.reasoningEffort }
             : {}),
+        ...(override.maxTokens !== undefined
+            ? { max_tokens: override.maxTokens }
+            : {}),
     };
+}
+
+/** Request timing for the completion log line. */
+type RequestTiming = {
+    startedAt: number;
+    firstOutputAt: number | undefined;
+    finishedAt: number;
+};
+
+function describeTiming(timing: RequestTiming): string {
+    const total = seconds(timing.finishedAt - timing.startedAt);
+    return timing.firstOutputAt !== undefined
+        ? `first output ${seconds(timing.firstOutputAt - timing.startedAt)}, total ${total}`
+        : `total ${total}`;
+}
+
+function seconds(ms: number): string {
+    return `${(Math.max(ms, 0) / 1000).toFixed(1)}s`;
 }
 
 type StreamedToolCall = {

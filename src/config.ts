@@ -11,6 +11,10 @@ export type ProviderConfig = {
     modelFilter: string[];
     requestHeaders: Record<string, string>;
     modelOverrides: Record<string, ModelOverride>;
+    /** Named endpoints for the Switch Endpoint command, name to base URL. */
+    profiles: Record<string, string>;
+    /** Dollars per day before a warning is raised; 0 disables the warning. */
+    spendWarning: number;
 };
 
 /** Effort levels the OpenAI protocol accepts for `reasoning_effort`. */
@@ -27,6 +31,8 @@ export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 export type ModelOverride = {
     contextWindow?: number;
     maxOutputTokens?: number;
+    /** A hard output cap, sent as `max_tokens`, unlike the two budget fields. */
+    maxTokens?: number;
     temperature?: number;
     reasoningEffort?: ReasoningEffort;
 };
@@ -44,7 +50,37 @@ export function getConfig(): ProviderConfig {
         modelOverrides: sanitizeOverrides(
             config.get<Record<string, unknown>>('modelOverrides', {})
         ),
+        profiles: sanitizeProfiles(
+            config.get<Record<string, unknown>>('profiles', {})
+        ),
+        spendWarning: sanitizeSpendWarning(config.get('spendWarning')),
     };
+}
+
+/**
+ * Profile URLs go through the same normalization as the base URL setting, so
+ * a profile behaves exactly like typing its URL into Set Base URL.
+ */
+export function sanitizeProfiles(
+    profiles: Record<string, unknown>
+): Record<string, string> {
+    const result: Record<string, string> = {};
+    for (const [name, url] of Object.entries(profiles)) {
+        if (name.trim().length === 0 || typeof url !== 'string') {
+            continue;
+        }
+        if (url.trim().length === 0) {
+            continue;
+        }
+        result[name.trim()] = normalizeBaseUrl(url);
+    }
+    return result;
+}
+
+function sanitizeSpendWarning(value: unknown): number {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0
+        ? value
+        : 0;
 }
 
 /**
@@ -110,6 +146,7 @@ export function sanitizeOverrides(
         const override: ModelOverride = {
             ...pick('contextWindow', positiveInteger(entry.contextWindow)),
             ...pick('maxOutputTokens', positiveInteger(entry.maxOutputTokens)),
+            ...pick('maxTokens', positiveInteger(entry.maxTokens)),
             ...pick('temperature', temperature(entry.temperature)),
             ...pick('reasoningEffort', reasoningEffort(entry.reasoningEffort)),
         };

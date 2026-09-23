@@ -77,7 +77,7 @@ export async function promptForApiKey(
 ): Promise<string | undefined> {
     const apiKey = await vscode.window.showInputBox({
         title: 'Tetrate Agent Router',
-        prompt: `Enter your Agent Router API key for ${hostOf(baseUrl)}`,
+        prompt: `Enter your Agent Router API key for ${hostOf(baseUrl)}. Keys are created in the dashboard at router.tetrate.ai.`,
         placeHolder: 'sk-...',
         password: true,
         ignoreFocusOut: true,

@@ -54,7 +54,8 @@
         "languageModelChatProviders": [
             {
                 "vendor": "tetrate-agent-router",
-                "displayName": "Tetrate Agent Router"
+                "displayName": "Tetrate Agent Router",
+                "managementCommand": "tetrate-model-provider.setApiKey"
             }
         ],
         "commands": [
@@ -81,6 +82,14 @@
             {
                 "command": "tetrate-model-provider.showStatus",
                 "title": "Tetrate Agent Router: Show Connection Status"
+            },
+            {
+                "command": "tetrate-model-provider.switchEndpoint",
+                "title": "Tetrate Agent Router: Switch Endpoint"
+            },
+            {
+                "command": "tetrate-model-provider.chooseModels",
+                "title": "Tetrate Agent Router: Choose Models"
             }
         ],
         "configuration": {
@@ -118,6 +127,11 @@
                                 "minimum": 1,
                                 "description": "Output limit in tokens, replacing the catalog value."
                             },
+                            "maxTokens": {
+                                "type": "number",
+                                "minimum": 1,
+                                "description": "Hard output cap sent as max_tokens with every request to matching models, unlike maxOutputTokens, which only adjusts the advertised budget. Some OpenAI reasoning models reject max_tokens in favour of max_completion_tokens."
+                            },
                             "temperature": {
                                 "type": "number",
                                 "minimum": 0,
@@ -147,9 +161,60 @@
                     "default": {},
                     "scope": "machine",
                     "markdownDescription": "Extra HTTP headers to send with every request, for example a routing hint or a tenant identifier. Do not put the API key here — it is kept in secret storage.\n\nMachine-scoped: settable in User settings only. `Authorization` cannot be set here; it is always derived from the stored key."
+                },
+                "tetrate-model-provider.profiles": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    },
+                    "default": {},
+                    "scope": "machine",
+                    "markdownDescription": "Named endpoints for the **Switch Endpoint** command, for example `{ \"Production\": \"https://api.router.tetrate.ai/v1\", \"Staging\": \"https://router.tare-staging.tetrate.ai/v1\" }`. Each endpoint keeps its own API key.\n\nMachine-scoped: settable in User settings only, since the API key is sent to the selected URL."
+                },
+                "tetrate-model-provider.spendWarning": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 0,
+                    "markdownDescription": "Raise a warning once the day's estimated Agent Router cost reaches this many dollars. `0` disables the warning. Costs are estimated from the public catalog's prices, so the warning is advisory; the dashboard is the billing authority."
                 }
             }
-        }
+        },
+        "walkthroughs": [
+            {
+                "id": "gettingStarted",
+                "title": "Get started with Tetrate Agent Router",
+                "description": "Chat with Anthropic, OpenAI, Google, and more behind one endpoint and one bill.",
+                "steps": [
+                    {
+                        "id": "createKey",
+                        "title": "Create an API key",
+                        "description": "An API key is created in the Agent Router dashboard and grants access to every routed model.\n[Open the Dashboard](https://router.tetrate.ai/)",
+                        "media": {
+                            "markdown": "media/walkthrough/create-key.md"
+                        }
+                    },
+                    {
+                        "id": "storeKey",
+                        "title": "Store the API key",
+                        "description": "The key is held in VS Code secret storage, scoped to the endpoint host. It is never written to a settings file.\n[Set API Key](command:tetrate-model-provider.setApiKey)",
+                        "media": {
+                            "markdown": "media/walkthrough/store-key.md"
+                        },
+                        "completionEvents": [
+                            "onCommand:tetrate-model-provider.setApiKey"
+                        ]
+                    },
+                    {
+                        "id": "enableModels",
+                        "title": "Enable models in the picker",
+                        "description": "Models contributed by an extension start out hidden. Run **Chat: Manage Language Models** from the Command Palette, select **Tetrate Agent Router**, and enable the models to offer.",
+                        "media": {
+                            "markdown": "media/walkthrough/enable-models.md"
+                        }
+                    }
+                ]
+            }
+        ]
     },
     "scripts": {
         "vscode:prepublish": "npm run clean && npm run bundle:prod",
