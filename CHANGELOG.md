@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
 Usage visibility and per-model control. No existing settings changed, and no action is needed on upgrade.
 
