@@ -93,6 +93,75 @@ export class LanguageModelError extends Error {
     }
 }
 
+export enum QuickPickItemKind {
+    Separator = -1,
+    Default = 0,
+}
+
+export enum TreeItemCollapsibleState {
+    None = 0,
+    Collapsed = 1,
+    Expanded = 2,
+}
+
+export enum ViewColumn {
+    Active = -1,
+    One = 1,
+}
+
+export enum TreeItemCheckboxState {
+    Unchecked = 0,
+    Checked = 1,
+}
+
+export class MarkdownString {
+    isTrusted?: boolean | { enabledCommands: readonly string[] };
+    supportThemeIcons?: boolean;
+
+    constructor(public value = '') {}
+
+    appendMarkdown(text: string): MarkdownString {
+        this.value += text;
+        return this;
+    }
+}
+
+export class ThemeColor {
+    constructor(public readonly id: string) {}
+}
+
+export class ThemeIcon {
+    constructor(public readonly id: string) {}
+}
+
+export class TreeItem {
+    id?: string;
+    description?: string;
+    tooltip?: unknown;
+    iconPath?: unknown;
+    command?: { command: string; title: string; arguments?: unknown[] };
+    contextValue?: string;
+    checkboxState?: TreeItemCheckboxState;
+
+    constructor(
+        public label: string,
+        public collapsibleState: TreeItemCollapsibleState = TreeItemCollapsibleState.None
+    ) {}
+}
+
+export class CancellationTokenSource {
+    token = {
+        isCancellationRequested: false,
+        onCancellationRequested: () => ({ dispose() {} }),
+    };
+
+    cancel(): void {
+        this.token.isCancellationRequested = true;
+    }
+
+    dispose(): void {}
+}
+
 export class EventEmitter<T> {
     private listeners: Array<(value: T) => void> = [];
 
@@ -167,6 +236,53 @@ export const window = {
         dispose() {},
     }),
     withProgress: <T>(_options: unknown, task: () => Thenable<T>) => task(),
+    registerTreeDataProvider: () => ({ dispose() {} }),
+    createTreeView: () => ({
+        badge: undefined as unknown,
+        onDidChangeCheckboxState: () => ({ dispose() {} }),
+        dispose() {},
+    }),
+    createWebviewPanel: () => ({
+        webview: { html: '' },
+        reveal() {},
+        onDidDispose: () => ({ dispose() {} }),
+        dispose() {},
+    }),
+    createQuickPick: () => {
+        const listeners = {
+            accept: [] as Array<() => void>,
+            hide: [] as Array<() => void>,
+            button: [] as Array<(button: unknown) => void>,
+        };
+        return {
+            title: '',
+            placeholder: '',
+            canSelectMany: false,
+            matchOnDescription: false,
+            buttons: [] as unknown[],
+            items: [] as unknown[],
+            selectedItems: [] as unknown[],
+            onDidAccept(listener: () => void) {
+                listeners.accept.push(listener);
+                return { dispose() {} };
+            },
+            onDidHide(listener: () => void) {
+                listeners.hide.push(listener);
+                return { dispose() {} };
+            },
+            onDidTriggerButton(listener: (button: unknown) => void) {
+                listeners.button.push(listener);
+                return { dispose() {} };
+            },
+            show() {},
+            dispose() {},
+            // Test hooks, not part of the real API.
+            _accept: () => listeners.accept.forEach((l) => l()),
+            _hide: () => listeners.hide.forEach((l) => l()),
+            _button: (button: unknown) =>
+                listeners.button.forEach((l) => l(button)),
+        };
+    },
 };
 
 export const commands = {
@@ -176,4 +292,14 @@ export const commands = {
 
 export const lm = {
     registerLanguageModelChatProvider: () => ({ dispose() {} }),
+};
+
+export const chat = {
+    createChatParticipant: (
+        _id: string,
+        _handler: (...args: unknown[]) => unknown
+    ) => ({
+        iconPath: undefined as unknown,
+        dispose() {},
+    }),
 };

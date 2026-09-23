@@ -90,6 +90,48 @@ describe('UsageHistory', () => {
         }
     });
 
+    it('reports daily totals oldest first with quiet days as zeros', async () => {
+        const history = new UsageHistory(makeStore());
+        await history.record(
+            'a',
+            usage({ inputTokens: 10, outputTokens: 5 }),
+            2,
+            NOON - 2 * DAY
+        );
+        await history.record('a', usage({ inputTokens: 1 }), 1, NOON);
+
+        const days = history.dailyTotals(3, NOON);
+        expect(days.map((d) => d.day)).toEqual([
+            dayKeyOf(NOON - 2 * DAY),
+            dayKeyOf(NOON - DAY),
+            dayKeyOf(NOON),
+        ]);
+        expect(days[0]).toMatchObject({
+            cost: 2,
+            requests: 1,
+            inputTokens: 10,
+            outputTokens: 5,
+        });
+        expect(days[1]).toMatchObject({ cost: 0, requests: 0 });
+        expect(days[2]).toMatchObject({ cost: 1, requests: 1 });
+    });
+
+    it('breaks a window down per model, biggest spender first', async () => {
+        const history = new UsageHistory(makeStore());
+        await history.record('outside', usage(), 9, NOON - 10 * DAY);
+        await history.record('cheap', usage({ inputTokens: 5 }), 0.1, NOON - DAY);
+        await history.record('costly', usage({ inputTokens: 50 }), 3, NOON - DAY);
+        await history.record('costly', usage({ inputTokens: 50 }), 2, NOON);
+
+        const rows = history.breakdown(7, NOON);
+        expect(rows.map((row) => row.modelId)).toEqual(['costly', 'cheap']);
+        expect(rows[0]).toMatchObject({
+            requests: 2,
+            inputTokens: 100,
+            cost: 5,
+        });
+    });
+
     it('survives a storage write that fails', async () => {
         const history = new UsageHistory({
             get: () => undefined,

@@ -139,7 +139,7 @@ The hosted catalog currently exposes more than 160 conversational models. To kee
 
 Only `*` is special and it matches within and across segments. Everything else, including `.` and `-`, compares literally, and matching is case-insensitive. A model is offered when it matches at least one pattern.
 
-**Tetrate Agent Router: Choose Models** edits the same setting from a checkbox list of every model the key can reach. The selection is written as exact ids, replacing any glob patterns; selecting everything clears the filter, which keeps newly added upstream models appearing on their own.
+**Tetrate Agent Router: Choose Models** edits the same setting from a checkbox list of every model the key can reach, grouped by provider, with tool and vision support marked by icons and the context window shown alongside the price. Two title buttons select or clear everything at once. The selection is written as exact ids, replacing any glob patterns; selecting everything clears the filter, which keeps newly added upstream models appearing on their own.
 
 ### Adding request headers
 
@@ -182,11 +182,11 @@ The budget fields exist for deployments the public catalog does not describe, wh
 
 The billed token counts are requested with every streamed response, accumulated per model, and combined with the public catalog's prices:
 
-- The status bar shows the running session cost after the first completed request, or the token count when no price is known. Clicking it opens the breakdown.
-- **Tetrate Agent Router: Show Session Usage** prints one line per model for the session, followed by today's and the last seven days' totals.
+- The status bar shows the running session cost after the first completed request, or the token count when no price is known, and a spinner with the model and elapsed time while a request streams. Hovering it shows the per-model table, today's and the last seven days' totals, and links to the dashboard; clicking it opens a command menu with the dashboard, the model chooser, and the setup commands.
+- **Tetrate Agent Router: Show Session Usage** opens the usage dashboard: a daily spend chart over the retained 62 days, a per-model breakdown switchable between 7, 30, and 62 days, and the session table, updating live as requests complete. A projection line estimates today's final spend from the intraday rate. The same lines are still written to the output channel.
 - Each completed request is logged to the output channel with its counts, cost, time to first output, and total duration.
 
-Daily aggregates are kept in extension storage for 62 days, so today's figure spans window reloads. When `spendWarning` is set, one warning per window is raised once today's estimated cost reaches the threshold, which puts a brake on a runaway agent session.
+Daily aggregates are kept in extension storage for 62 days, so today's figure spans window reloads. When `spendWarning` is set, one warning per window is raised once today's estimated cost reaches the threshold, which puts a brake on a runaway agent session; the status bar item also takes the warning colour at 80% of the threshold and the error colour past it.
 
 Models with known prices also show them in the model picker, as dollars per million input and output tokens.
 
@@ -200,10 +200,36 @@ Costs are estimates computed from the public catalog's current prices; the Agent
 | Tetrate Agent Router: Clear Agent Router API Key | Remove the stored key for the configured endpoint. |
 | Tetrate Agent Router: Set Base URL | Change the endpoint, with validation. |
 | Tetrate Agent Router: Refresh Model List | Discard the cached model list and re-query the endpoint. |
-| Tetrate Agent Router: Show Session Usage | Print the tokens and cost for this session, today, and the last seven days. |
+| Tetrate Agent Router: Show Session Usage | Open the usage dashboard with the daily spend chart and per-model breakdowns. |
 | Tetrate Agent Router: Show Connection Status | Check the endpoint, the key, and the catalog cache in one report. |
 | Tetrate Agent Router: Switch Endpoint | Change the base URL from the profiles quick pick. |
 | Tetrate Agent Router: Choose Models | Edit the model filter from a checkbox list of reachable models. |
+| Tetrate Agent Router: Command Menu | The status bar menu: dashboard, models, endpoint, and setup in one pick. |
+| Tetrate Agent Router: Test Connection | Send a one-token completion and report the round trip. |
+| Tetrate Agent Router: Add Endpoint Profile | Name and store an endpoint for the Switch Endpoint command. |
+| Tetrate Agent Router: Remove Endpoint Profile | Remove a stored endpoint profile. |
+
+## The Overview view
+
+A **Tetrate Agent Router** icon in the activity bar opens the Overview view, which gathers the moving parts in one place:
+
+- **Endpoint**: the base URL with its profile name, the key status, the catalog age, and the configured profiles with the current one marked. Each row is clickable and runs the matching command, and profiles are added and removed from here.
+- **Models**: every model the key can reach, grouped by provider, with the id and context window on each row. The checkbox on each row edits the model filter in place, a family checkbox toggles the whole group, and once requests have been made a row shows its median time to first output. An inline action opens the chat view.
+- **Usage**: the session, today, and the last seven days. Each row opens the dashboard.
+
+A **Recent Requests** view below it lists the last 50 completed requests, newest first, with tokens, cost, duration, and an icon marking truncated or filtered answers.
+
+When no API key is stored for the configured endpoint, the view shows the setup buttons instead. **Tetrate Agent Router: Test Connection** confirms a fresh setup end to end by sending a one-token completion and reporting the round trip.
+
+## The @tetrate chat participant
+
+The extension registers a `@tetrate` participant in the chat view for operational questions:
+
+```text
+@tetrate /usage                        today, the last seven days, and the session
+@tetrate /models vision under $1       offered models by capability, price, or name
+@tetrate /switch Staging               change to a named endpoint profile
+```
 
 ## Using the models from another extension
 

@@ -29,6 +29,18 @@ export type StoredTotals = RequestUsage & {
     unpricedRequests: number;
 };
 
+/** One day's aggregate across every model, for the dashboard chart. */
+export type DayTotals = {
+    day: string;
+    cost: number;
+    requests: number;
+    inputTokens: number;
+    outputTokens: number;
+};
+
+/** One model's aggregate over a window of days. */
+export type ModelBreakdownRow = StoredTotals & { modelId: string };
+
 type StoredHistory = {
     /** Keyed by local day (`2026-09-23`), then by model id. */
     days: Record<string, Record<string, StoredTotals>>;
@@ -95,6 +107,67 @@ export class UsageHistory {
             }
         }
         return { cost, requests };
+    }
+
+    /**
+     * Per-day aggregates over the last `days`, oldest first, with quiet days
+     * included as zeros so a chart over the result has no gaps.
+     */
+    dailyTotals(days: number, now: number = Date.now()): DayTotals[] {
+        return lastDays(days, now)
+            .reverse()
+            .map((day) => {
+                const totals = {
+                    day,
+                    cost: 0,
+                    requests: 0,
+                    inputTokens: 0,
+                    outputTokens: 0,
+                };
+                for (const model of Object.values(
+                    this.history.days[day] ?? {}
+                )) {
+                    totals.cost += model.cost;
+                    totals.requests += model.requests;
+                    totals.inputTokens += model.inputTokens;
+                    totals.outputTokens += model.outputTokens;
+                }
+                return totals;
+            });
+    }
+
+    /** Per-model aggregates over the last `days`, biggest spender first. */
+    breakdown(days: number, now: number = Date.now()): ModelBreakdownRow[] {
+        const byModel = new Map<string, ModelBreakdownRow>();
+        for (const day of lastDays(days, now)) {
+            for (const [modelId, totals] of Object.entries(
+                this.history.days[day] ?? {}
+            )) {
+                const row = byModel.get(modelId) ?? {
+                    modelId,
+                    requests: 0,
+                    inputTokens: 0,
+                    cachedInputTokens: 0,
+                    outputTokens: 0,
+                    reasoningTokens: 0,
+                    cost: 0,
+                    unpricedRequests: 0,
+                };
+                row.requests += totals.requests;
+                row.inputTokens += totals.inputTokens;
+                row.cachedInputTokens += totals.cachedInputTokens;
+                row.outputTokens += totals.outputTokens;
+                row.reasoningTokens += totals.reasoningTokens;
+                row.cost += totals.cost;
+                row.unpricedRequests += totals.unpricedRequests;
+                byModel.set(modelId, row);
+            }
+        }
+        return [...byModel.values()].sort(
+            (a, b) =>
+                b.cost - a.cost ||
+                b.inputTokens + b.outputTokens - (a.inputTokens + a.outputTokens)
+        );
     }
 
     private prune(now: number): void {

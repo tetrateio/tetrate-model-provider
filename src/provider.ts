@@ -19,7 +19,13 @@ import {
 import { convertMessages, convertToolMode, convertTools } from './messages';
 import { getApiKey, promptForApiKey } from './secrets';
 import { countTokens } from './tokenCount';
-import { formatCost, formatTokens, type RequestUsage, UsageTracker } from './usage';
+import {
+    ActivityTracker,
+    formatCost,
+    formatTokens,
+    type RequestUsage,
+    UsageTracker,
+} from './usage';
 
 const USER_AGENT = 'vscode-tetrate-model-provider';
 
@@ -76,6 +82,9 @@ export class TetrateChatModelProvider
 
     /** Session usage totals; the extension wires this to the status bar. */
     readonly usage = new UsageTracker();
+
+    /** In-flight requests, for a live activity indicator. */
+    readonly activity = new ActivityTracker();
 
     /** Keyed by base URL and filter so a settings change cannot serve stale models. */
     private cache?: CachedModels;
@@ -279,6 +288,7 @@ export class TetrateChatModelProvider
             }, ms);
         };
 
+        const activityHandle = this.activity.begin(model.id);
         try {
             const tools = convertTools(options.tools);
             const stream = await this.client(config, apiKey).chat.completions.create(
@@ -344,6 +354,7 @@ export class TetrateChatModelProvider
                 }
                 if (outputStarted && firstOutputAt === undefined) {
                     firstOutputAt = Date.now();
+                    this.activity.markOutput(activityHandle);
                 }
 
                 // Armed after the chunk is handled so the allowance measures
@@ -387,11 +398,16 @@ export class TetrateChatModelProvider
                 calls.length,
                 progress
             );
-            this.recordUsage(model.id, usage, {
-                startedAt,
-                firstOutputAt,
-                finishedAt: Date.now(),
-            });
+            this.recordUsage(
+                model.id,
+                usage,
+                {
+                    startedAt,
+                    firstOutputAt,
+                    finishedAt: Date.now(),
+                },
+                finishReason
+            );
         } catch (error) {
             if (stalled) {
                 this.log.error(stalled.message);
@@ -405,6 +421,7 @@ export class TetrateChatModelProvider
             );
             throw toLanguageModelError(error);
         } finally {
+            this.activity.end(activityHandle);
             if (idleTimer) {
                 clearTimeout(idleTimer);
             }
@@ -468,7 +485,8 @@ export class TetrateChatModelProvider
     private recordUsage(
         modelId: string,
         usage: OpenAI.Completions.CompletionUsage | undefined,
-        timing: RequestTiming
+        timing: RequestTiming,
+        finishReason: string | undefined
     ): void {
         if (!usage) {
             this.log.info(
@@ -486,7 +504,15 @@ export class TetrateChatModelProvider
         const cost = this.usage.record(
             modelId,
             request,
-            this.pricingFor(modelId)
+            this.pricingFor(modelId),
+            {
+                durationMs: timing.finishedAt - timing.startedAt,
+                firstOutputMs:
+                    timing.firstOutputAt !== undefined
+                        ? timing.firstOutputAt - timing.startedAt
+                        : undefined,
+                finishReason,
+            }
         );
 
         const cached =

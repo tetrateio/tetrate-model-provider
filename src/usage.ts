@@ -49,10 +49,18 @@ export function costOf(
     );
 }
 
-type ModelTotals = RequestUsage & {
+export type ModelTotals = RequestUsage & {
     requests: number;
     cost: number;
     unpricedRequests: number;
+};
+
+/** Timing and outcome of one request, alongside its token counts. */
+export type RequestMeta = {
+    durationMs: number;
+    /** Absent when the stream ended without producing output. */
+    firstOutputMs?: number;
+    finishReason?: string;
 };
 
 /** What subscribers receive for each completed request. */
@@ -61,17 +69,26 @@ export type UsageEvent = {
     usage: RequestUsage;
     /** Undefined when the model has no known price. */
     cost: number | undefined;
+    meta?: RequestMeta;
 };
+
+/**
+ * Recent first-output samples kept per model. Enough for a stable median,
+ * small enough that a long session cannot grow the tracker unbounded.
+ */
+const FIRST_OUTPUT_SAMPLE_LIMIT = 50;
 
 export class UsageTracker {
     private readonly byModel = new Map<string, ModelTotals>();
+    private readonly firstOutputByModel = new Map<string, number[]>();
     private readonly listeners = new Set<(event: UsageEvent) => void>();
 
     /** Adds one request and returns its cost, when the price is known. */
     record(
         modelId: string,
         usage: RequestUsage,
-        pricing: ModelPricing | undefined
+        pricing: ModelPricing | undefined,
+        meta?: RequestMeta
     ): number | undefined {
         const cost = costOf(usage, pricing);
         const totals = this.byModel.get(modelId) ?? {
@@ -92,10 +109,42 @@ export class UsageTracker {
         totals.unpricedRequests += cost === undefined ? 1 : 0;
         this.byModel.set(modelId, totals);
 
+        if (meta?.firstOutputMs !== undefined) {
+            const samples = this.firstOutputByModel.get(modelId) ?? [];
+            samples.push(meta.firstOutputMs);
+            this.firstOutputByModel.set(
+                modelId,
+                samples.slice(-FIRST_OUTPUT_SAMPLE_LIMIT)
+            );
+        }
+
         for (const listener of [...this.listeners]) {
-            listener({ modelId, usage, cost });
+            listener({ modelId, usage, cost, ...(meta ? { meta } : {}) });
         }
         return cost;
+    }
+
+    /**
+     * Median time to first output over recent requests, or undefined when no
+     * request for the model has produced output yet.
+     */
+    firstOutputStats(
+        modelId: string
+    ): { medianMs: number; samples: number } | undefined {
+        const samples = this.firstOutputByModel.get(modelId);
+        if (!samples || samples.length === 0) {
+            return undefined;
+        }
+        const sorted = [...samples].sort((a, b) => a - b);
+        const mid = Math.floor(sorted.length / 2);
+        // The fallbacks satisfy noUncheckedIndexedAccess; the non-empty check
+        // above means they can never be taken.
+        const upper = sorted[mid] ?? 0;
+        const medianMs =
+            sorted.length % 2 === 1
+                ? upper
+                : ((sorted[mid - 1] ?? 0) + upper) / 2;
+        return { medianMs, samples: samples.length };
     }
 
     /** Notifies after every recorded request; returns a disposable. */
@@ -145,9 +194,9 @@ export class UsageTracker {
         return `${formatTokens(this.totalTokens)} tokens`;
     }
 
-    /** One line per model, biggest spender first, plus a session total. */
-    summarize(): string[] {
-        const lines = [...this.byModel.entries()]
+    /** Per-model totals, biggest spender first, for tooltips and dashboards. */
+    perModel(): Array<ModelTotals & { modelId: string }> {
+        return [...this.byModel.entries()]
             .sort(
                 ([, a], [, b]) =>
                     b.cost - a.cost ||
@@ -155,7 +204,14 @@ export class UsageTracker {
                         b.outputTokens -
                         (a.inputTokens + a.outputTokens)
             )
-            .map(([modelId, totals]) => describeTotals(modelId, totals));
+            .map(([modelId, totals]) => ({ modelId, ...totals }));
+    }
+
+    /** One line per model, biggest spender first, plus a session total. */
+    summarize(): string[] {
+        const lines = this.perModel().map(({ modelId, ...totals }) =>
+            describeTotals(modelId, totals)
+        );
 
         const total = `Session total: ${this.requestCount} request(s), ${formatTokens(this.totalTokens)} tokens, ${formatCost(this.totalCost)}${
             this.hasUnpricedRequests
@@ -163,6 +219,75 @@ export class UsageTracker {
                 : ''
         }`;
         return [...lines, total];
+    }
+}
+
+/** One request currently being answered. */
+export type ActiveRequest = {
+    modelId: string;
+    startedAt: number;
+    outputStarted: boolean;
+};
+
+/**
+ * Tracks requests between dispatch and completion, for surfacing in-flight
+ * work in the UI. Handles rather than objects, so a provider's finally block
+ * can end a request without holding a reference across the whole stream.
+ */
+export class ActivityTracker {
+    private readonly byHandle = new Map<number, ActiveRequest>();
+    private readonly listeners = new Set<() => void>();
+    private nextHandle = 1;
+
+    /** Registers a request; returns a handle to mark and end it with. */
+    begin(modelId: string, startedAt = Date.now()): number {
+        const handle = this.nextHandle++;
+        this.byHandle.set(handle, {
+            modelId,
+            startedAt,
+            outputStarted: false,
+        });
+        this.notify();
+        return handle;
+    }
+
+    /** Marks the first output; repeated and unknown handles are ignored. */
+    markOutput(handle: number): void {
+        const request = this.byHandle.get(handle);
+        if (!request || request.outputStarted) {
+            return;
+        }
+        request.outputStarted = true;
+        this.notify();
+    }
+
+    /** Removes the request; unknown handles are ignored. */
+    end(handle: number): void {
+        if (this.byHandle.delete(handle)) {
+            this.notify();
+        }
+    }
+
+    /** In-flight requests, oldest first. Copies, so a snapshot a subscriber
+     * takes is not mutated underfoot by a later markOutput. */
+    get active(): readonly ActiveRequest[] {
+        return [...this.byHandle.values()].map((request) => ({ ...request }));
+    }
+
+    /** Notifies on begin, first output, and end; returns a disposable. */
+    subscribe(listener: () => void): { dispose(): void } {
+        this.listeners.add(listener);
+        return {
+            dispose: () => {
+                this.listeners.delete(listener);
+            },
+        };
+    }
+
+    private notify(): void {
+        for (const listener of [...this.listeners]) {
+            listener();
+        }
     }
 }
 

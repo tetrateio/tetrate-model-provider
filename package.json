@@ -90,6 +90,92 @@
             {
                 "command": "tetrate-model-provider.chooseModels",
                 "title": "Tetrate Agent Router: Choose Models"
+            },
+            {
+                "command": "tetrate-model-provider.menu",
+                "title": "Tetrate Agent Router: Command Menu"
+            },
+            {
+                "command": "tetrate-model-provider.testConnection",
+                "title": "Tetrate Agent Router: Test Connection"
+            },
+            {
+                "command": "tetrate-model-provider.addProfile",
+                "title": "Tetrate Agent Router: Add Endpoint Profile",
+                "icon": "$(add)"
+            },
+            {
+                "command": "tetrate-model-provider.removeProfile",
+                "title": "Tetrate Agent Router: Remove Endpoint Profile",
+                "icon": "$(trash)"
+            },
+            {
+                "command": "tetrate-model-provider.useInChat",
+                "title": "Tetrate Agent Router: Use Model in Chat",
+                "icon": "$(comment-discussion)"
+            },
+            {
+                "command": "tetrate-model-provider.refreshModelsView",
+                "title": "Refresh",
+                "icon": "$(refresh)"
+            },
+            {
+                "command": "tetrate-model-provider.openDashboard",
+                "title": "Open Usage Dashboard",
+                "icon": "$(graph)"
+            }
+        ],
+        "menus": {
+            "view/title": [
+                {
+                    "command": "tetrate-model-provider.refreshModelsView",
+                    "when": "view == tetrate-model-provider.overview",
+                    "group": "navigation@1"
+                },
+                {
+                    "command": "tetrate-model-provider.openDashboard",
+                    "when": "view == tetrate-model-provider.overview",
+                    "group": "navigation@2"
+                }
+            ],
+            "view/item/context": [
+                {
+                    "command": "tetrate-model-provider.useInChat",
+                    "when": "view == tetrate-model-provider.overview && viewItem == model",
+                    "group": "inline"
+                },
+                {
+                    "command": "tetrate-model-provider.removeProfile",
+                    "when": "view == tetrate-model-provider.overview && viewItem == profile",
+                    "group": "inline"
+                },
+                {
+                    "command": "tetrate-model-provider.addProfile",
+                    "when": "view == tetrate-model-provider.overview && viewItem == profiles",
+                    "group": "inline"
+                }
+            ]
+        },
+        "chatParticipants": [
+            {
+                "id": "tetrate-model-provider.tetrate",
+                "fullName": "Tetrate Agent Router",
+                "name": "tetrate",
+                "description": "Usage, models, and endpoints of the Agent Router",
+                "commands": [
+                    {
+                        "name": "usage",
+                        "description": "Today's and this session's usage and cost"
+                    },
+                    {
+                        "name": "models",
+                        "description": "Find offered models by capability, price, or name"
+                    },
+                    {
+                        "name": "switch",
+                        "description": "Switch to a named endpoint profile"
+                    }
+                ]
             }
         ],
         "configuration": {
@@ -179,6 +265,37 @@
                 }
             }
         },
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "tetrate-agent-router",
+                    "title": "Tetrate Agent Router",
+                    "icon": "images/logo.svg"
+                }
+            ]
+        },
+        "views": {
+            "tetrate-agent-router": [
+                {
+                    "id": "tetrate-model-provider.overview",
+                    "name": "Overview",
+                    "icon": "images/logo.svg",
+                    "contextualTitle": "Tetrate Agent Router"
+                },
+                {
+                    "id": "tetrate-model-provider.requests",
+                    "name": "Recent Requests",
+                    "icon": "images/logo.svg",
+                    "contextualTitle": "Agent Router Requests"
+                }
+            ]
+        },
+        "viewsWelcome": [
+            {
+                "view": "tetrate-model-provider.overview",
+                "contents": "No Agent Router API key is stored for the configured endpoint. Keys are created in the [dashboard](https://router.tetrate.ai/).\n[Set API Key](command:tetrate-model-provider.setApiKey)\n[Switch Endpoint](command:tetrate-model-provider.switchEndpoint)"
+            }
+        ],
         "walkthroughs": [
             {
                 "id": "gettingStarted",

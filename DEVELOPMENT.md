@@ -12,6 +12,18 @@ src/
 ├── tokenCount.ts       Local token estimation
 ├── config.ts           Settings access, base URL normalization, glob matching
 ├── secrets.ts          API key storage and prompting
+├── usage.ts            Session usage totals, cost arithmetic, live activity
+├── usageHistory.ts     Durable daily aggregates behind the dashboard
+├── usageView.ts        Status bar tooltip, spend colouring, dashboard webview
+├── requestLog.ts       Bounded, persisted log of recent requests
+├── requestsView.ts     The Recent Requests view
+├── modelPicker.ts      The grouped Choose Models quick pick
+├── treeView.ts         The Overview view in the activity bar
+├── profileCommands.ts  Add and remove endpoint profiles
+├── commandCenter.ts    The status bar command menu
+├── chatParticipant.ts  The @tetrate chat participant
+├── onboarding.ts       The Test Connection probe
+├── diagnostics.ts      The Show Connection Status report
 └── test/
     ├── vscodeMock.ts       Stand-in for the vscode module
     └── integration.test.ts Opt-in tests against the live service

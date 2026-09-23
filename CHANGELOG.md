@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+A richer surface for the stats and the model list. No settings changed, and no action is needed on upgrade.
+
+### Added
+
+- A usage dashboard. **Show Session Usage** now opens a panel with a daily spend chart over the retained 62 days, a per-model breakdown switchable between 7, 30, and 62 days, and the session table. The panel updates live while requests complete, and a projection line estimates today's final spend from the intraday rate alongside the trailing seven-day average. The same figures are still written to the output channel.
+- A richer status bar hover. The per-model session table, today's and the last seven days' totals, and links to the dashboard and the model chooser are shown on hover instead of requiring a command. When `spendWarning` is set, the status bar item turns to the warning colour at 80% of the threshold and to the error colour past it. While a request streams, the item shows a spinner with the model and the elapsed time. Clicking the item opens a command menu; the dashboard, the model chooser, and the setup commands are one pick away.
+- An **Overview** view in the activity bar: the endpoint, key, catalog, and profile status with one-click actions, every reachable model grouped by provider with a checkbox that edits the model filter in place, and the session, today, and seven-day usage. Model rows show the median time to first output once requests have been made, and an inline action opens the chat view. When no key is stored, the view shows the onboarding buttons instead. A **Recent Requests** view below it lists the last 50 completed requests with their tokens, cost, duration, and finish reason.
+- A better **Choose Models** picker. Models are grouped under provider separators, tool and vision support is marked with icons, the context window is shown alongside the price, and two title buttons select or clear everything at once.
+- A `@tetrate` chat participant. `/usage` reports today's and the session's figures in the chat view, `/models` finds offered models by capability, price, or name (`@tetrate /models vision under $1`), and `/switch` changes to a named endpoint profile.
+- A **Test Connection** command that sends a one-token completion to the first offered model and reports the round trip, so a fresh setup is confirmed end to end rather than only by listing models.
+- **Add Endpoint Profile** and **Remove Endpoint Profile** commands, so profiles no longer require hand-editing a settings object. The Overview view lists them with the current one marked.
+
 ## 0.5.0
 
 Usage visibility and per-model control. No existing settings changed, and no action is needed on upgrade.

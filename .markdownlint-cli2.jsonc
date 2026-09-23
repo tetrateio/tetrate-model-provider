@@ -3,6 +3,11 @@
         // GitHub renders long prose lines fine, and hard-wrapping Markdown at
         // 80 columns makes diffs noisier for every prose edit.
         "MD013": false,
+        // The changelog repeats "Added" and friends under every release
+        // heading; only duplicates under the same parent are a mistake.
+        "MD024": {
+            "siblings_only": true
+        },
         // <kbd> is used for key names; GitHub renders it, Markdown has no
         // equivalent.
         "MD033": {

@@ -9,6 +9,7 @@ import {
     TetrateChatModelProvider,
     ToolCallAccumulator,
 } from './provider';
+import type { ActiveRequest } from './usage';
 
 type Chunk = OpenAI.Chat.Completions.ChatCompletionChunk;
 type Delta = OpenAI.Chat.Completions.ChatCompletionChunk.Choice.Delta;
@@ -487,6 +488,79 @@ describe('provideLanguageModelChatResponse', () => {
         expect(h.log.info).toHaveBeenCalledWith(
             expect.stringContaining('1,200 in (200 cached) + 34 out')
         );
+    });
+
+    it('shows the request in activity while streaming and clears it after', async () => {
+        const h = harness({ steps: [text('hi'), finish('stop')] });
+        const snapshots: ActiveRequest[][] = [];
+        h.provider.activity.subscribe(() => {
+            snapshots.push([...h.provider.activity.active]);
+        });
+
+        await h.run();
+
+        // One snapshot per change: begin, first output, end.
+        expect(snapshots).toHaveLength(3);
+        expect(snapshots[0]).toEqual([
+            expect.objectContaining({
+                modelId: MODEL.id,
+                outputStarted: false,
+            }),
+        ]);
+        expect(snapshots[1]).toEqual([
+            expect.objectContaining({ modelId: MODEL.id, outputStarted: true }),
+        ]);
+        expect(snapshots[2]).toEqual([]);
+        expect(h.provider.activity.active).toEqual([]);
+    });
+
+    it('emits a usage event carrying the finish reason and duration', async () => {
+        const h = harness({
+            steps: [
+                text('hi'),
+                finish('stop'),
+                usageChunk({
+                    prompt_tokens: 10,
+                    completion_tokens: 5,
+                    total_tokens: 15,
+                }),
+            ],
+        });
+        const listener = vi.fn();
+        h.provider.usage.subscribe(listener);
+
+        await h.run();
+
+        expect(listener).toHaveBeenCalledTimes(1);
+        expect(listener).toHaveBeenCalledWith(
+            expect.objectContaining({
+                modelId: MODEL.id,
+                meta: expect.objectContaining({
+                    finishReason: 'stop',
+                    durationMs: expect.any(Number),
+                }),
+            })
+        );
+    });
+
+    it('books a first-output sample for a request that produced output', async () => {
+        const h = harness({
+            steps: [
+                text('hi'),
+                finish('stop'),
+                usageChunk({
+                    prompt_tokens: 10,
+                    completion_tokens: 5,
+                    total_tokens: 15,
+                }),
+            ],
+        });
+
+        await h.run();
+
+        expect(h.provider.usage.firstOutputStats('claude-test')).toMatchObject({
+            samples: 1,
+        });
     });
 
     it('logs timing but records nothing when the gateway sends no usage block', async () => {

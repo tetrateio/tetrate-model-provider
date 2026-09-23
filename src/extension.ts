@@ -1,30 +1,47 @@
 import * as vscode from 'vscode';
 
-import { fetchApiModels, selectChatModels } from './catalog';
+import { fetchApiModels, pricingOf, selectChatModels } from './catalog';
 import {
     clearPublicCatalogCache,
     loadPublicCatalog,
     peekPublicCatalog,
 } from './catalogCache';
+import { registerTetrateParticipant } from './chatParticipant';
+import { showCommandCenter } from './commandCenter';
 import {
     CONFIG_SECTION,
     DEFAULT_BASE_URL,
     getConfig,
-    isIncludedByFilter,
     normalizeBaseUrl,
     setBaseUrl,
     VENDOR,
 } from './config';
 import { buildStatusReport } from './diagnostics';
+import { pickModels } from './modelPicker';
+import { probeCompletion } from './onboarding';
+import {
+    addProfileFlow,
+    profileNameOf,
+    removeProfileFlow,
+} from './profileCommands';
 import { TetrateChatModelProvider } from './provider';
+import { RequestLog } from './requestLog';
+import { REQUESTS_VIEW_ID, RequestsTreeProvider } from './requestsView';
 import {
     API_KEY_SECRET,
     deleteApiKey,
     getApiKey,
     promptForApiKey,
 } from './secrets';
+import { AgentRouterTreeProvider, type TreeNode } from './treeView';
 import { formatCost } from './usage';
 import { UsageHistory } from './usageHistory';
+import {
+    buildUsageTooltip,
+    spendBackground,
+    spendLevel,
+    UsageDashboard,
+} from './usageView';
 
 /** Where API keys are created and billing lives. */
 export const DASHBOARD_URL = 'https://router.tetrate.ai/';
@@ -35,17 +52,70 @@ export function activate(context: vscode.ExtensionContext) {
     });
     const provider = new TetrateChatModelProvider(context, log);
     const history = new UsageHistory(context.globalState);
+    const requestLog = new RequestLog(context.globalState);
+
+    const dashboard = new UsageDashboard(history, provider.usage);
 
     // Appears after the first completed request and shows the session cost, or
-    // the token count when no price is known. Clicking it opens the breakdown.
+    // the token count when no price is known, and a spinner while a request
+    // streams. The hover carries the per-model table and the durable daily
+    // figures; clicking opens the command menu.
     const usageBar = vscode.window.createStatusBarItem(
         vscode.StatusBarAlignment.Right,
         100
     );
     usageBar.name = 'Agent Router usage';
-    usageBar.command = 'tetrate-model-provider.showUsage';
+    usageBar.command = 'tetrate-model-provider.menu';
     usageBar.tooltip =
-        'Agent Router usage this session. Click for the breakdown.';
+        'Agent Router usage this session. Click for the menu.';
+
+    const updateUsageBar = () => {
+        // Hidden until the first completed request of the session, as before.
+        if (provider.usage.requestCount === 0) {
+            usageBar.hide();
+            return;
+        }
+        const threshold = getConfig().spendWarning;
+        const today = history.today();
+        usageBar.text = `$(pulse) ${provider.usage.headline()}`;
+        usageBar.tooltip = buildUsageTooltip({
+            session: provider.usage,
+            today,
+            week: history.window(7),
+            spendWarning: threshold,
+        });
+        // Warning colour at 80% of the daily threshold, error past it, so the
+        // pressure is continuously visible instead of one toast.
+        usageBar.backgroundColor = spendBackground(
+            spendLevel(today.cost, threshold)
+        );
+        usageBar.show();
+    };
+
+    // While requests stream, the bar shows the oldest one's model and elapsed
+    // time. A one-second timer keeps the elapsed figure moving; it only runs
+    // while something is active, so an idle window costs nothing.
+    let activityTimer: ReturnType<typeof setInterval> | undefined;
+    const renderActivity = () => {
+        const active = provider.activity.active;
+        if (active.length === 0) {
+            if (activityTimer) {
+                clearInterval(activityTimer);
+                activityTimer = undefined;
+            }
+            updateUsageBar();
+            return;
+        }
+        const oldest = active[0]!;
+        const seconds = Math.round((Date.now() - oldest.startedAt) / 1000);
+        const others = active.length > 1 ? ` (+${active.length - 1})` : '';
+        usageBar.text = `$(loading~spin) ${oldest.modelId} · ${seconds}s${others}`;
+        usageBar.backgroundColor = undefined;
+        usageBar.show();
+        if (!activityTimer) {
+            activityTimer = setInterval(renderActivity, 1000);
+        }
+    };
 
     // At most one warning per window: the point is to interrupt a runaway
     // agent session once, not to nag every request after the threshold.
@@ -72,16 +142,143 @@ export function activate(context: vscode.ExtensionContext) {
         }
     };
 
+    // The tree curates the filter, so it needs every reachable model, not the
+    // filtered view the provider caches. Memoized on the provider's cadence;
+    // invalidation drops it alongside the provider's own cache.
+    let allModelsCache:
+        | {
+              at: number;
+              models: readonly vscode.LanguageModelChatInformation[];
+          }
+        | undefined;
+    const listAllModels = async (): Promise<
+        readonly vscode.LanguageModelChatInformation[]
+    > => {
+        const config = getConfig();
+        const key = await getApiKey(context, config.baseUrl);
+        if (!key) {
+            return [];
+        }
+        if (allModelsCache && Date.now() - allModelsCache.at < 15 * 60_000) {
+            return allModelsCache.models;
+        }
+        const [apiModels, catalog] = await Promise.all([
+            fetchApiModels(config.baseUrl, key, config.requestHeaders),
+            loadPublicCatalog(context.globalState),
+        ]);
+        const models = selectChatModels(apiModels, catalog, {
+            ...config,
+            modelFilter: [],
+        });
+        allModelsCache = { at: Date.now(), models };
+        return models;
+    };
+
+    const tree = new AgentRouterTreeProvider({
+        hasKey: async (baseUrl) =>
+            Boolean(await getApiKey(context, baseUrl)),
+        listAllModels,
+        catalogInfo: () => {
+            const cached = peekPublicCatalog(context.globalState);
+            return cached
+                ? { fetchedAt: cached.fetchedAt, entries: cached.models.length }
+                : undefined;
+        },
+        latencyOf: (modelId) => provider.usage.firstOutputStats(modelId),
+        session: provider.usage,
+        history,
+    });
+    const treeView = vscode.window.createTreeView(
+        'tetrate-model-provider.overview',
+        { treeDataProvider: tree }
+    );
+    const requestsView = new RequestsTreeProvider(requestLog);
+
     context.subscriptions.push(
         log,
         provider,
         usageBar,
+        dashboard,
+        tree,
+        treeView,
+        requestsView,
+        vscode.window.registerTreeDataProvider(REQUESTS_VIEW_ID, requestsView),
+        registerTetrateParticipant({
+            usageLines: () => provider.usage.summarize(),
+            today: () => history.today(),
+            week: () => history.window(7),
+            listModels: listAllModels,
+            priceOf: (modelId) => {
+                const models =
+                    peekPublicCatalog(context.globalState)?.models ?? [];
+                return pricingOf(
+                    models.find(
+                        (model) =>
+                            model.model.toLowerCase() === modelId.toLowerCase()
+                    )
+                );
+            },
+            profiles: () => getConfig().profiles,
+            currentBaseUrl: () => getConfig().baseUrl,
+            switchTo: async (url) => {
+                await setBaseUrl(url);
+                provider.invalidate();
+            },
+        }),
+        { dispose: () => clearInterval(activityTimer) },
+        provider.activity.subscribe(renderActivity),
+        treeView.onDidChangeCheckboxState(async (event) => {
+            const changes = event.items.map(
+                ([node, state]) =>
+                    [
+                        node,
+                        state === vscode.TreeItemCheckboxState.Checked,
+                    ] as [TreeNode, boolean]
+            );
+            const outcome = await tree.applyCheckboxChanges(changes);
+            if (outcome === 'rejected-empty') {
+                vscode.window.showWarningMessage(
+                    'At least one model must stay included; the filter was left unchanged.'
+                );
+                tree.refresh();
+                return;
+            }
+            provider.invalidate();
+        }),
+        // A key or settings change reshapes the model list, so the tree
+        // follows the same invalidation the picker does.
+        provider.onDidChangeLanguageModelChatInformation(() => {
+            allModelsCache = undefined;
+            tree.refresh();
+        }),
         provider.usage.subscribe((event) => {
-            usageBar.text = `$(pulse) ${provider.usage.headline()}`;
-            usageBar.show();
+            requestLog.add({
+                at: Date.now(),
+                modelId: event.modelId,
+                inputTokens: event.usage.inputTokens,
+                outputTokens: event.usage.outputTokens,
+                ...(event.cost !== undefined ? { cost: event.cost } : {}),
+                durationMs: event.meta?.durationMs ?? 0,
+                ...(event.meta?.firstOutputMs !== undefined
+                    ? { firstOutputMs: event.meta.firstOutputMs }
+                    : {}),
+                ...(event.meta?.finishReason
+                    ? { finishReason: event.meta.finishReason }
+                    : {}),
+            });
             void history
                 .record(event.modelId, event.usage, event.cost)
-                .then(warnOnSpend);
+                .then(() => {
+                    updateUsageBar();
+                    dashboard.update();
+                    tree.refresh();
+                    const today = history.today();
+                    treeView.badge = {
+                        value: today.requests,
+                        tooltip: `${formatCost(today.cost)} today`,
+                    };
+                    return warnOnSpend();
+                });
         }),
         // Registration is synchronous and does not touch the network: VS Code
         // calls back into the provider when it actually needs the model list.
@@ -98,9 +295,24 @@ export function activate(context: vscode.ExtensionContext) {
                     return;
                 }
                 provider.invalidate();
-                vscode.window.showInformationMessage(
-                    'Agent Router API key saved for the configured endpoint.'
+                // The natural next steps after a fresh key: curate the list,
+                // then prove the setup with a real round trip.
+                const chooseModels = 'Choose Models';
+                const test = 'Test Connection';
+                const action = await vscode.window.showInformationMessage(
+                    'Agent Router API key saved for the configured endpoint.',
+                    chooseModels,
+                    test
                 );
+                if (action === chooseModels) {
+                    await vscode.commands.executeCommand(
+                        'tetrate-model-provider.chooseModels'
+                    );
+                } else if (action === test) {
+                    await vscode.commands.executeCommand(
+                        'tetrate-model-provider.testConnection'
+                    );
+                }
             }
         ),
 
@@ -141,8 +353,20 @@ export function activate(context: vscode.ExtensionContext) {
 
         vscode.commands.registerCommand(
             'tetrate-model-provider.switchEndpoint',
-            async () => {
+            async (node?: unknown) => {
                 const config = getConfig();
+                // A profile row in the tree passes itself as the argument, so
+                // clicking it switches directly instead of re-asking.
+                const clicked = profileNameOf(node);
+                if (clicked) {
+                    const url = config.profiles[clicked];
+                    if (url && url !== config.baseUrl) {
+                        await setBaseUrl(url);
+                        provider.invalidate();
+                        await announceEndpoint(context, url);
+                    }
+                    return;
+                }
                 type Item = vscode.QuickPickItem & { url: string };
                 const items: Item[] = Object.entries(config.profiles).map(
                     ([name, url]) => ({
@@ -222,29 +446,12 @@ export function activate(context: vscode.ExtensionContext) {
                     return;
                 }
 
-                type Item = vscode.QuickPickItem & { id: string };
-                const items: Item[] = all.map((model) => ({
-                    label: model.name,
-                    description: model.id,
-                    detail: model.detail,
-                    picked: isIncludedByFilter(model.id, config.modelFilter),
-                    id: model.id,
-                }));
-                const selected = await vscode.window.showQuickPick(items, {
-                    title: 'Tetrate Agent Router: models to offer',
-                    placeHolder:
-                        'The selection replaces the modelFilter setting; selecting everything clears it.',
-                    canPickMany: true,
-                    matchOnDescription: true,
-                });
+                const selected = await pickModels(all, config.modelFilter);
                 if (selected === undefined) {
                     return;
                 }
 
-                const filter = filterFromSelection(
-                    all.length,
-                    selected.map((item) => item.id)
-                );
+                const filter = filterFromSelection(all.length, selected);
                 if (filter === undefined) {
                     vscode.window.showWarningMessage(
                         'Nothing was selected, so the model filter was left unchanged.'
@@ -264,6 +471,103 @@ export function activate(context: vscode.ExtensionContext) {
                         ? `Offering all ${all.length} models; the model filter was cleared.`
                         : `Offering ${filter.length} of ${all.length} models.`
                 );
+            }
+        ),
+
+        vscode.commands.registerCommand('tetrate-model-provider.menu', () => {
+            const config = getConfig();
+            const profileName = Object.entries(config.profiles).find(
+                ([, url]) => url === config.baseUrl
+            )?.[0];
+            return showCommandCenter({
+                baseUrl: config.baseUrl,
+                ...(profileName ? { profileName } : {}),
+                sessionHeadline: provider.usage.headline(),
+                todayCost: formatCost(history.today().cost),
+            });
+        }),
+
+        vscode.commands.registerCommand(
+            'tetrate-model-provider.openDashboard',
+            () => {
+                dashboard.show();
+            }
+        ),
+
+        vscode.commands.registerCommand(
+            'tetrate-model-provider.refreshModelsView',
+            () =>
+                vscode.commands.executeCommand(
+                    'tetrate-model-provider.refreshModels'
+                )
+        ),
+
+        vscode.commands.registerCommand(
+            'tetrate-model-provider.addProfile',
+            async () => {
+                await addProfileFlow();
+                tree.refresh();
+            }
+        ),
+
+        vscode.commands.registerCommand(
+            'tetrate-model-provider.removeProfile',
+            async (node?: unknown) => {
+                await removeProfileFlow(profileNameOf(node));
+                tree.refresh();
+            }
+        ),
+
+        vscode.commands.registerCommand(
+            'tetrate-model-provider.useInChat',
+            // The chat view owns model selection; opening it is as far as an
+            // extension can take the user without proposed API.
+            () => vscode.commands.executeCommand('workbench.action.chat.open')
+        ),
+
+        vscode.commands.registerCommand(
+            'tetrate-model-provider.testConnection',
+            async () => {
+                const config = getConfig();
+                const apiKey = await getApiKey(context, config.baseUrl);
+                if (!apiKey) {
+                    vscode.window.showWarningMessage(
+                        'No Agent Router API key is configured yet. Run "Tetrate Agent Router: Set Agent Router API Key".'
+                    );
+                    return;
+                }
+                const result = await vscode.window.withProgress(
+                    {
+                        location: vscode.ProgressLocation.Notification,
+                        title: 'Testing the Agent Router connection…',
+                    },
+                    async () => {
+                        const models = await listAllModels();
+                        const modelId = models[0]?.id;
+                        if (!modelId) {
+                            return {
+                                ok: false as const,
+                                message:
+                                    'No models are reachable with this key.',
+                            };
+                        }
+                        return probeCompletion({
+                            baseUrl: config.baseUrl,
+                            apiKey,
+                            headers: config.requestHeaders,
+                            modelId,
+                        });
+                    }
+                );
+                if (result.ok) {
+                    vscode.window.showInformationMessage(
+                        `Agent Router answered via ${result.modelId} in ${(result.ms / 1000).toFixed(1)}s. The endpoint and key work end to end.`
+                    );
+                } else {
+                    vscode.window.showWarningMessage(
+                        `Agent Router test request failed: ${result.message}`
+                    );
+                }
             }
         ),
 
@@ -304,12 +608,6 @@ export function activate(context: vscode.ExtensionContext) {
             async () => {
                 const today = history.today();
                 const week = history.window(7);
-                if (provider.usage.requestCount === 0 && today.requests === 0) {
-                    vscode.window.showInformationMessage(
-                        'No Agent Router requests have been made today.'
-                    );
-                    return;
-                }
                 const lines = [
                     ...(provider.usage.requestCount > 0
                         ? provider.usage.summarize()
@@ -317,17 +615,12 @@ export function activate(context: vscode.ExtensionContext) {
                     `Today: ${today.requests} request(s), ${formatCost(today.cost)}`,
                     `Last 7 days: ${week.requests} request(s), ${formatCost(week.cost)}`,
                 ];
+                // The log keeps the plain-text record; the dashboard is the
+                // primary view of the same numbers.
                 for (const line of lines) {
                     log.info(line);
                 }
-                const openLog = 'Open Log';
-                const action = await vscode.window.showInformationMessage(
-                    `Agent Router: ${formatCost(today.cost)} today, ${provider.usage.headline()} this session.`,
-                    openLog
-                );
-                if (action === openLog) {
-                    log.show();
-                }
+                dashboard.show();
             }
         ),
 
@@ -404,6 +697,8 @@ export function activate(context: vscode.ExtensionContext) {
             if (event.affectsConfiguration(CONFIG_SECTION)) {
                 log.info('Configuration changed; reloading model list.');
                 provider.invalidate();
+                // A new spendWarning threshold changes the bar's colouring.
+                updateUsageBar();
             }
         }),
 
