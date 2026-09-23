@@ -73,7 +73,9 @@ Step 3 is not optional. Models contributed by an extension start out hidden in t
 
 ### Where the key is stored
 
-The key is held in VS Code [secret storage](https://code.visualstudio.com/api/references/vscode-api#SecretStorage) under `tetrate-model-provider.agentRouterApiKey`. It is never written to a settings file, a log, or the output channel. On macOS that means the system Keychain.
+The key is held in VS Code [secret storage](https://code.visualstudio.com/api/references/vscode-api#SecretStorage), scoped to the endpoint host: `tetrate-model-provider.agentRouterApiKey:<host>`. It is never written to a settings file, a log, or the output channel. On macOS that means the system Keychain.
+
+Scoping by host keeps each credential with its endpoint. When the base URL is switched between the hosted service and a self-hosted deployment, each host keeps its own key, and a key entered for one host is never sent to another. A key stored by a version before scoping serves as a fallback for any host until a scoped key is saved.
 
 Secret storage is per-machine and does not sync across Settings Sync.
 
@@ -175,7 +177,7 @@ Costs are estimates computed from the public catalog's current prices; the Agent
 | Command | Description |
 | --- | --- |
 | Tetrate Agent Router: Set Agent Router API Key | Store or replace the API key. |
-| Tetrate Agent Router: Clear Agent Router API Key | Remove the stored key. |
+| Tetrate Agent Router: Clear Agent Router API Key | Remove the stored key for the configured endpoint. |
 | Tetrate Agent Router: Set Base URL | Change the endpoint, with validation. |
 | Tetrate Agent Router: Refresh Model List | Discard the cached model list and re-query the endpoint. |
 | Tetrate Agent Router: Show Session Usage | Print the tokens and cost accumulated this session, per model. |
@@ -310,6 +312,8 @@ The catalog's `mode` field decides. These modes are excluded because they cannot
 
 Every other mode is offered, including unrecognized future ones. `mode: "responses"` matters here: it records that the upstream provider's native API is OpenAI's Responses API, and every OpenAI model is listed that way. The Agent Router still serves those models over the OpenAI-compatible chat-completions route, so excluding them would drop the entire OpenAI line-up.
 
+A model the catalog marks disabled is excluded as well, since `/models` can lag the catalog and requests to a disabled model fail.
+
 For models the catalog does not describe, an id pattern filters obvious embedding and rerank models instead.
 
 ### Request translation
@@ -322,6 +326,7 @@ Other translation details:
 - Assistant content is flattened to text, because the OpenAI protocol has no multi-part assistant content. Images in a replayed assistant turn are dropped rather than sent in an invalid shape.
 - Images become `image_url` parts carrying a base64 data URL.
 - A tool result rendered with `@vscode/prompt-tsx`, as VS Code's built-in tools produce, is serialized to JSON text, since the model cannot consume the element tree directly.
+- An image returned by a tool cannot ride in a `tool` message, which the protocol keeps text only. For a model that accepts image input it is attached to the user message that follows, with a note in the tool text marking where it went; for a text-only model it is named in place.
 - An empty tool result is sent as `(no output)`, because the API rejects a `tool` message with empty content.
 - Messages with no usable content are skipped, and an assistant turn that only calls tools omits `content` rather than sending an empty string.
 
@@ -352,7 +357,7 @@ Image cost is a flat estimate, since real cost scales with resolution and comput
 ## Behaviour and limitations
 
 - **Output length.** No token cap is sent, so each model's server-side default applies. Sending `max_tokens` unconditionally risks rejection on models that require `max_completion_tokens` instead. Set either through `modelOptions`.
-- **Images.** VS Code offers image attachments only for models that report vision support. The provider forwards every image part it receives as a base64 data URL and does not check the capability itself. Audio and PDF inputs are not forwarded, because the chat-completions content model this endpoint exposes has no place for them.
+- **Images.** VS Code offers image attachments only for models that report vision support. The provider forwards every image part it receives as a base64 data URL and does not check the capability itself, except for images inside tool results, which are forwarded only to models that report image input. Audio and PDF inputs are not forwarded, because the chat-completions content model this endpoint exposes has no place for them.
 - **Reasoning traces** are not surfaced. The provider response part types have no thinking part in the supported VS Code versions. A default `reasoning_effort` can be set per model through `modelOverrides`, and reasoning tokens are reported in the usage breakdown.
 - **Prompt caching** is not configured explicitly. Where the upstream provider applies it automatically, it still takes effect.
 - **Retries** follow the OpenAI SDK default of two retries on transient failures, for three attempts in total. A retry happens only before the stream opens, so a partially delivered answer is never re-requested.

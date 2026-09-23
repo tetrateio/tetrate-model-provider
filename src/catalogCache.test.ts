@@ -149,7 +149,8 @@ describe('loadPublicCatalog', () => {
                             modalities: { input: ['image'], output: ['text'] },
                             limits: { max_output_tokens: 128_000 },
                             metadata: { description: 'x'.repeat(1000) },
-                            // Not read by the provider, so not worth storing.
+                            // Only the disabling value carries information,
+                            // so true is not worth storing.
                             isEnabled: true,
                         },
                     ])
@@ -171,6 +172,25 @@ describe('loadPublicCatalog', () => {
             contextWindow: 1_000_000,
             limits: { max_output_tokens: 128_000 },
         });
+    });
+
+    it('keeps a disabling isEnabled so the filter survives a cached read', async () => {
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(() =>
+                Promise.resolve(
+                    catalogResponse([
+                        { model: 'sunset-model', isEnabled: false },
+                    ])
+                )
+            )
+        );
+        const store = makeStore();
+
+        await loadPublicCatalog(store, undefined, NOW);
+        const stored = store.read() as { models: CatalogModel[] };
+
+        expect(stored.models[0]?.isEnabled).toBe(false);
     });
 
     it('stores prices re-encoded as numbers', async () => {

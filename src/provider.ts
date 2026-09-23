@@ -146,7 +146,7 @@ export class TetrateChatModelProvider
         token: vscode.CancellationToken
     ): Promise<vscode.LanguageModelChatInformation[]> {
         const config = getConfig();
-        const apiKey = await this.resolveApiKey(options.silent);
+        const apiKey = await this.resolveApiKey(options.silent, config.baseUrl);
         if (!apiKey) {
             // With no key there is nothing to offer. Staying quiet here is
             // required in silent mode and reasonable otherwise, since the user
@@ -233,14 +233,16 @@ export class TetrateChatModelProvider
         token: vscode.CancellationToken
     ): Promise<void> {
         const config = getConfig();
-        const apiKey = await this.currentApiKey();
+        const apiKey = await this.currentApiKey(config.baseUrl);
         if (!apiKey) {
             throw vscode.LanguageModelError.NoPermissions(
                 'No Agent Router API key is configured. Run "Tetrate Agent Router: Set Agent Router API Key".'
             );
         }
 
-        const chatMessages = convertMessages(messages);
+        const chatMessages = convertMessages(messages, {
+            toolResultImages: model.capabilities?.imageInput === true,
+        });
         if (chatMessages.length === 0) {
             this.log.warn(
                 `Request to ${model.id} carried no convertible content; nothing was sent.`
@@ -507,10 +509,14 @@ export class TetrateChatModelProvider
         return countTokens(text);
     }
 
-    /** Reads the stored key, going to secret storage at most once per invalidation. */
-    private async currentApiKey(): Promise<string | undefined> {
+    /**
+     * Reads the key stored for this endpoint, going to secret storage at most
+     * once per invalidation. A base URL change invalidates through the
+     * configuration listener, so the cache never crosses hosts.
+     */
+    private async currentApiKey(baseUrl: string): Promise<string | undefined> {
         if (!this.keyCache) {
-            this.keyCache = { value: await getApiKey(this.context) };
+            this.keyCache = { value: await getApiKey(this.context, baseUrl) };
         }
         return this.keyCache.value;
     }
@@ -521,12 +527,15 @@ export class TetrateChatModelProvider
      * resolves models in the background at startup and must not raise a dialog
      * then.
      */
-    private async resolveApiKey(silent: boolean): Promise<string | undefined> {
-        const existing = await this.currentApiKey();
+    private async resolveApiKey(
+        silent: boolean,
+        baseUrl: string
+    ): Promise<string | undefined> {
+        const existing = await this.currentApiKey(baseUrl);
         if (existing || silent) {
             return existing;
         }
-        const prompted = await promptForApiKey(this.context);
+        const prompted = await promptForApiKey(this.context, baseUrl);
         if (prompted) {
             this.keyCache = { value: prompted };
         }

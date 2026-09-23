@@ -145,6 +145,91 @@ describe('convertMessages', () => {
         });
     });
 
+    it('hoists tool result images into the following user message for vision models', () => {
+        const result = convertMessages(
+            [
+                assistant(
+                    new vscode.LanguageModelToolCallPart(
+                        'call-1',
+                        'screenshot',
+                        {}
+                    )
+                ),
+                user(
+                    new vscode.LanguageModelToolResultPart('call-1', [
+                        new vscode.LanguageModelTextPart('captured'),
+                        vscode.LanguageModelDataPart.image(
+                            new Uint8Array([1, 2, 3]),
+                            'image/png'
+                        ),
+                    ]),
+                    new vscode.LanguageModelTextPart('what do you see?')
+                ),
+            ],
+            { toolResultImages: true }
+        );
+
+        expect(result.map((message) => message.role)).toEqual([
+            'assistant',
+            'tool',
+            'user',
+        ]);
+        expect(result[1]).toEqual({
+            role: 'tool',
+            tool_call_id: 'call-1',
+            content:
+                'captured\n[image: image/png, attached to the next user message]',
+        });
+        expect(result[2]?.content).toEqual([
+            {
+                type: 'image_url',
+                image_url: { url: 'data:image/png;base64,AQID' },
+            },
+            { type: 'text', text: 'what do you see?' },
+        ]);
+    });
+
+    it('creates the follow-up user message when the tool result stands alone', () => {
+        const result = convertMessages(
+            [
+                user(
+                    new vscode.LanguageModelToolResultPart('call-1', [
+                        vscode.LanguageModelDataPart.image(
+                            new Uint8Array([1, 2, 3]),
+                            'image/png'
+                        ),
+                    ])
+                ),
+            ],
+            { toolResultImages: true }
+        );
+
+        expect(result.map((message) => message.role)).toEqual(['tool', 'user']);
+        expect(result[1]?.content).toEqual([
+            {
+                type: 'image_url',
+                image_url: { url: 'data:image/png;base64,AQID' },
+            },
+        ]);
+    });
+
+    it('names tool result images without forwarding them by default', () => {
+        const result = convertMessages([
+            user(
+                new vscode.LanguageModelToolResultPart('call-1', [
+                    vscode.LanguageModelDataPart.image(
+                        new Uint8Array([1, 2, 3]),
+                        'image/png'
+                    ),
+                ])
+            ),
+        ]);
+
+        expect(result).toEqual([
+            { role: 'tool', tool_call_id: 'call-1', content: '[image: image/png]' },
+        ]);
+    });
+
     it('encodes an image part as a data URL', () => {
         const result = convertMessages([
             user(

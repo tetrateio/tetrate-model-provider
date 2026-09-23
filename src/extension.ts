@@ -55,13 +55,16 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand(
             'tetrate-model-provider.setApiKey',
             async () => {
-                const apiKey = await promptForApiKey(context);
+                const apiKey = await promptForApiKey(
+                    context,
+                    getConfig().baseUrl
+                );
                 if (!apiKey) {
                     return;
                 }
                 provider.invalidate();
                 vscode.window.showInformationMessage(
-                    'Agent Router API key saved.'
+                    'Agent Router API key saved for the configured endpoint.'
                 );
             }
         ),
@@ -69,7 +72,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand(
             'tetrate-model-provider.clearApiKey',
             async () => {
-                await deleteApiKey(context);
+                await deleteApiKey(context, getConfig().baseUrl);
                 provider.invalidate();
                 vscode.window.showInformationMessage(
                     'Agent Router API key removed.'
@@ -97,9 +100,17 @@ export function activate(context: vscode.ExtensionContext) {
                 const normalized = normalizeBaseUrl(value);
                 await setBaseUrl(normalized);
                 provider.invalidate();
-                vscode.window.showInformationMessage(
-                    `Agent Router base URL set to ${normalized}`
-                );
+                // Keys are stored per host, so a freshly configured endpoint
+                // usually has none yet; saying so beats a later failed listing.
+                if (await getApiKey(context, normalized)) {
+                    vscode.window.showInformationMessage(
+                        `Agent Router base URL set to ${normalized}`
+                    );
+                } else {
+                    vscode.window.showInformationMessage(
+                        `Agent Router base URL set to ${normalized}. No API key is stored for this endpoint yet; run "Set Agent Router API Key".`
+                    );
+                }
             }
         ),
 
@@ -110,7 +121,7 @@ export function activate(context: vscode.ExtensionContext) {
                 // TTL, otherwise new metadata stays invisible until it lapses.
                 await clearPublicCatalogCache(context.globalState);
                 provider.invalidate();
-                if (!(await getApiKey(context))) {
+                if (!(await getApiKey(context, getConfig().baseUrl))) {
                     vscode.window.showWarningMessage(
                         'No Agent Router API key is configured yet. Run "Tetrate Agent Router: Set Agent Router API Key".'
                     );
@@ -150,7 +161,7 @@ export function activate(context: vscode.ExtensionContext) {
             'tetrate-model-provider.showStatus',
             async () => {
                 const config = getConfig();
-                const key = await getApiKey(context);
+                const key = await getApiKey(context, config.baseUrl);
                 const cached = peekPublicCatalog(context.globalState);
 
                 const report = await vscode.window.withProgress(
@@ -223,10 +234,10 @@ export function activate(context: vscode.ExtensionContext) {
         }),
 
         // Keeps a key change made in another window from leaving this one with a
-        // stale model list. The event covers every secret this extension owns,
-        // so filter rather than re-querying for an unrelated key.
+        // stale model list. The event covers every secret this extension owns;
+        // the prefix matches the per-host names and the legacy unscoped one.
         context.secrets.onDidChange((event) => {
-            if (event.key === API_KEY_SECRET) {
+            if (event.key.startsWith(API_KEY_SECRET)) {
                 provider.invalidate();
             }
         })

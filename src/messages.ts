@@ -6,6 +6,17 @@ type ContentPart = OpenAI.Chat.Completions.ChatCompletionContentPart;
 type ToolCall =
     OpenAI.Chat.Completions.ChatCompletionMessageToolCall;
 
+export type ConvertOptions = {
+    /**
+     * Forward images found in tool results to the model. A `tool` message is
+     * text-only in the OpenAI protocol, so the images travel in the user
+     * message that follows it; the tool text marks where each one came from.
+     * Only set for models that accept image input, since sending an image to
+     * a text-only model is a hard API error.
+     */
+    toolResultImages?: boolean;
+};
+
 /**
  * Rewrites VS Code's chat history as OpenAI chat-completion messages.
  *
@@ -17,7 +28,8 @@ type ToolCall =
  * validates.
  */
 export function convertMessages(
-    messages: readonly vscode.LanguageModelChatRequestMessage[]
+    messages: readonly vscode.LanguageModelChatRequestMessage[],
+    options: ConvertOptions = {}
 ): ChatMessage[] {
     const result: ChatMessage[] = [];
 
@@ -42,11 +54,19 @@ export function convertMessages(
                     },
                 });
             } else if (part instanceof vscode.LanguageModelToolResultPart) {
+                const flattened = flattenToolResult(
+                    part.content,
+                    options.toolResultImages === true
+                );
                 result.push({
                     role: 'tool',
                     tool_call_id: part.callId,
-                    content: flattenToolResult(part.content),
+                    content: flattened.text,
                 });
+                // Hoisted images join the user content assembled below, which
+                // is pushed after every tool message of this VS Code message,
+                // so the ordering the API validates is preserved.
+                content.push(...flattened.images);
             } else if (part instanceof vscode.LanguageModelDataPart) {
                 const converted = convertDataPart(part);
                 if (converted) {
@@ -89,19 +109,38 @@ function toText(content: ContentPart[]): string {
         .join('\n');
 }
 
+type FlattenedToolResult = {
+    text: string;
+    /** Image parts to carry in the user message that follows; see convertMessages. */
+    images: ContentPart[];
+};
+
 /**
- * A `tool` message carries plain text. Images returned by a tool cannot be
- * attached here, so they are named instead of silently vanishing.
+ * A `tool` message carries plain text. Images returned by a tool are hoisted
+ * into the next user message when the model accepts them, and are named in
+ * the text either way, so they never vanish silently.
  */
-function flattenToolResult(parts: ReadonlyArray<unknown>): string {
+function flattenToolResult(
+    parts: ReadonlyArray<unknown>,
+    withImages: boolean
+): FlattenedToolResult {
     const chunks: string[] = [];
+    const images: ContentPart[] = [];
 
     for (const part of parts) {
         if (part instanceof vscode.LanguageModelTextPart) {
             chunks.push(part.value);
         } else if (part instanceof vscode.LanguageModelDataPart) {
             if (part.mimeType.startsWith('image/')) {
-                chunks.push(`[image: ${part.mimeType}]`);
+                const converted = withImages ? convertDataPart(part) : undefined;
+                if (converted) {
+                    images.push(converted);
+                    chunks.push(
+                        `[image: ${part.mimeType}, attached to the next user message]`
+                    );
+                } else {
+                    chunks.push(`[image: ${part.mimeType}]`);
+                }
             } else {
                 chunks.push(decodeText(part.data));
             }
@@ -118,7 +157,7 @@ function flattenToolResult(parts: ReadonlyArray<unknown>): string {
     const text = chunks.filter((chunk) => chunk.length > 0).join('\n');
     // The API rejects a tool message with empty content, and a tool that
     // returned nothing is a normal outcome worth reporting as such.
-    return text.length > 0 ? text : '(no output)';
+    return { text: text.length > 0 ? text : '(no output)', images };
 }
 
 export function convertDataPart(

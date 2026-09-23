@@ -422,12 +422,17 @@ export function selectChatModels(
  * Embedding, rerank and image-generation models are served from the same
  * endpoint but cannot answer a chat request, so offering them would only
  * produce failures. The catalog's `mode` is authoritative; the id pattern
- * covers models the catalog does not describe.
+ * covers models the catalog does not describe. A model the catalog marks
+ * disabled is excluded for the same reason: `/models` can lag the catalog,
+ * and requests to a disabled model fail.
  */
 export function isChatModel(
     apiModel: ApiModel,
     catalogModel: CatalogModel | undefined
 ): boolean {
+    if (catalogModel?.isEnabled === false) {
+        return false;
+    }
     if (catalogModel?.mode) {
         return !NON_CONVERSATIONAL_MODES.has(catalogModel.mode);
     }

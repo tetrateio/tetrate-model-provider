@@ -10,6 +10,12 @@ Usage visibility and per-model control. No existing settings changed, and no act
 - Prices in the model picker. A model with known pricing shows its input and output price per million tokens in the picker detail and in the tooltip, and reasoning models are marked in the tooltip.
 - A `modelOverrides` setting, keyed by the same glob patterns as `modelFilter`. `contextWindow` and `maxOutputTokens` replace catalog values, which gives real budgets to models the public catalog does not describe. `temperature` and `reasoningEffort` are sent with every request to matching models and take precedence over a calling extension's `modelOptions`.
 - A **Show Connection Status** command. The extension version, the base URL, whether a key is stored, a live check of the models endpoint with reachable and offered counts, and the age of the cached catalog are reported in one place.
+- Images returned by tools are forwarded to models that accept image input. A `tool` message is text only in the OpenAI protocol, so each image travels in the user message that follows it, with a note in the tool text marking where it went. Text-only models keep the previous placeholder, and an agent that captures screenshots can now have them seen.
+
+### Changed
+
+- API keys are stored per endpoint host. Switching the base URL between the hosted service and a self-hosted deployment previously sent the one stored key to whichever host was configured. A key stored by an earlier version keeps working as a fallback until a per-host key is saved, so nothing needs re-entering on upgrade; **Clear Agent Router API Key** removes the key for the configured endpoint along with the old unscoped one.
+- Models the public catalog marks disabled are no longer offered, since requests to them fail even when `/models` still lists them.
 
 ## 0.4.0
 

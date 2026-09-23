@@ -282,6 +282,23 @@ describe('isChatModel', () => {
         ).toBe(true);
     });
 
+    it('excludes a model the catalog marks disabled', () => {
+        expect(
+            isChatModel({ id: 'sunset-model' }, {
+                model: 'sunset-model',
+                mode: 'chat',
+                isEnabled: false,
+            })
+        ).toBe(false);
+        expect(
+            isChatModel({ id: 'live-model' }, {
+                model: 'live-model',
+                mode: 'chat',
+                isEnabled: true,
+            })
+        ).toBe(true);
+    });
+
     it('trusts the catalog mode over the id', () => {
         // The id looks like an embedding model, but the catalog disagrees.
         expect(

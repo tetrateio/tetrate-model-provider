@@ -121,6 +121,8 @@ function compact(model: CatalogModel): CatalogModel {
 
     return {
         model: model.model,
+        // Only the disabling value is information; true is the default read.
+        ...(model.isEnabled === false ? { isEnabled: false } : {}),
         ...(model.provider !== undefined ? { provider: model.provider } : {}),
         ...(model.displayName !== undefined
             ? { displayName: model.displayName }
