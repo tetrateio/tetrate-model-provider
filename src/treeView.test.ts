@@ -162,6 +162,47 @@ describe('AgentRouterTreeProvider', () => {
         expect(items[2]?.description).toBe('no traffic observed');
     });
 
+    it('marks families and models of a failing provider', async () => {
+        const tree = makeProvider({
+            providerReport: () =>
+                Promise.resolve({
+                    providers: [
+                        {
+                            name: 'anthropic',
+                            reachable: false,
+                            observedRequests: 3,
+                            failures: 3,
+                        },
+                    ],
+                }),
+        });
+
+        const families = await tree.getChildren({ kind: 'root', id: 'models' });
+        const anthropic = tree.getTreeItem(
+            families.find(
+                (node) => node.kind === 'family' && node.name === 'anthropic'
+            )!
+        );
+        expect(anthropic.description).toBe('provider failing');
+        expect((anthropic.iconPath as vscode.ThemeIcon).id).toBe('warning');
+
+        const openai = tree.getTreeItem(
+            families.find(
+                (node) => node.kind === 'family' && node.name === 'openai'
+            )!
+        );
+        expect(openai.description).toBeUndefined();
+
+        const [model] = await tree.getChildren({
+            kind: 'family',
+            name: 'anthropic',
+            allIncluded: true,
+        });
+        const item = tree.getTreeItem(model!);
+        expect(item.description).toContain('provider failing');
+        expect((item.iconPath as vscode.ThemeIcon).id).toBe('warning');
+    });
+
     it('says so when the gateway serves no provider report', async () => {
         const tree = makeProvider();
         const [child] = await tree.getChildren({ kind: 'providerHealth' });

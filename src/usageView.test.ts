@@ -188,6 +188,52 @@ describe('dashboardData', () => {
     });
 });
 
+describe('routing analytics', () => {
+    const record = (servedBy?: string) => ({
+        at: NOON,
+        modelId: 'claude-opus-5',
+        inputTokens: 10,
+        outputTokens: 1,
+        durationMs: 100,
+        ...(servedBy ? { servedBy } : {}),
+    });
+
+    it('counts fallback-served requests and groups the routes', () => {
+        const data = dashboardData(
+            new UsageHistory(makeStore()),
+            new UsageTracker(),
+            NOON,
+            [
+                record('vertexanthropic/claude-opus-5'),
+                record('vertexanthropic/claude-opus-5'),
+                record(),
+            ]
+        );
+
+        expect(data.routing).toEqual({
+            recent: 3,
+            fallbacks: 2,
+            routes: [
+                {
+                    modelId: 'claude-opus-5',
+                    servedBy: 'vertexanthropic/claude-opus-5',
+                    count: 2,
+                },
+            ],
+        });
+    });
+
+    it('reports zero routing when no requests carry servedBy', () => {
+        const data = dashboardData(
+            new UsageHistory(makeStore()),
+            new UsageTracker(),
+            NOON,
+            [record()]
+        );
+        expect(data.routing).toEqual({ recent: 1, fallbacks: 0, routes: [] });
+    });
+});
+
 describe('renderUsageDashboard', () => {
     it('embeds the data and the nonce the CSP requires', async () => {
         const history = new UsageHistory(makeStore());

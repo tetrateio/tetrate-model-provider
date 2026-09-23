@@ -48,6 +48,31 @@ describe('RequestsTreeProvider', () => {
         expect(item.tooltip).toContain('Finish reason: stop');
     });
 
+    it('marks a request the gateway served from another backend', () => {
+        const provider = new RequestsTreeProvider(new RequestLog());
+        const item = provider.getTreeItem(
+            record({ servedBy: 'vertexanthropic/claude-opus-5' })
+        );
+
+        expect(item.description).toContain(
+            'via vertexanthropic/claude-opus-5'
+        );
+        expect(item.tooltip).toContain(
+            'Served by vertexanthropic/claude-opus-5 (fallback or override)'
+        );
+
+        const direct = provider.getTreeItem(record());
+        expect(direct.description).not.toContain('via');
+    });
+
+    it('gates the copy action on rows that carry a request id', () => {
+        const provider = new RequestsTreeProvider(new RequestLog());
+        expect(
+            provider.getTreeItem(record({ requestId: 'req-1' })).contextValue
+        ).toBe('request-id');
+        expect(provider.getTreeItem(record()).contextValue).toBe('request');
+    });
+
     it('shows unpriced when the model has no known price', () => {
         const view = new RequestsTreeProvider(new RequestLog());
         const item = view.getTreeItem(record({ cost: undefined }));

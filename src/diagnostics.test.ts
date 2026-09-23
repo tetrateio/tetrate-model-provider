@@ -10,6 +10,7 @@ const config: ProviderConfig = {
     modelOverrides: {},
     profiles: {},
     spendWarning: 0,
+    sessionAttribution: false,
 };
 
 const base: StatusInput = {

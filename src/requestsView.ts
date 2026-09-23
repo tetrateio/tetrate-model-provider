@@ -40,10 +40,19 @@ export class RequestsTreeProvider
         );
         item.description = `${formatTokens(record.inputTokens)} → ${formatTokens(record.outputTokens)} · ${
             record.cost === undefined ? 'unpriced' : formatCost(record.cost)
-        } · ${formatSeconds(record.durationMs)}`;
+        } · ${formatSeconds(record.durationMs)}${
+            record.servedBy ? ` · via ${record.servedBy}` : ''
+        }`;
         item.tooltip = [
             new Date(record.at).toLocaleTimeString(),
             record.modelId,
+            // Fallback routing and model-name overrides answer with another
+            // backend; naming it here is what makes routing visible at all.
+            ...(record.servedBy
+                ? [
+                      `Served by ${record.servedBy} (fallback or override), not ${record.modelId} directly.`,
+                  ]
+                : []),
             `${formatTokens(record.inputTokens)} input tokens, ${formatTokens(record.outputTokens)} output tokens`,
             ...(record.firstOutputMs !== undefined
                 ? [`First output after ${formatSeconds(record.firstOutputMs)}`]
@@ -56,7 +65,9 @@ export class RequestsTreeProvider
             ...(record.requestId ? [`Request id: ${record.requestId}`] : []),
         ].join('\n');
         item.iconPath = new vscode.ThemeIcon(iconFor(record.finishReason));
-        item.contextValue = 'request';
+        // A distinct context value gates the copy-id inline action to rows
+        // that actually carry an id (records from before the id existed).
+        item.contextValue = record.requestId ? 'request-id' : 'request';
         return item;
     }
 }

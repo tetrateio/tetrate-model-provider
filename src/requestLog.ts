@@ -31,6 +31,8 @@ export type RequestRecord = {
     finishReason?: string;
     /** The X-Request-ID sent with the request; finds it in Request Logs. */
     requestId?: string;
+    /** The backend that answered, when it differs from the requested model. */
+    servedBy?: string;
 };
 
 export class RequestLog {

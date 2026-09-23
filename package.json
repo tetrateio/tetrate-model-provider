@@ -115,6 +115,11 @@
                 "icon": "$(comment-discussion)"
             },
             {
+                "command": "tetrate-model-provider.copyRequestId",
+                "title": "Copy Request ID",
+                "icon": "$(copy)"
+            },
+            {
                 "command": "tetrate-model-provider.refreshModelsView",
                 "title": "Refresh",
                 "icon": "$(refresh)"
@@ -152,6 +157,11 @@
                 {
                     "command": "tetrate-model-provider.addProfile",
                     "when": "view == tetrate-model-provider.overview && viewItem == profiles",
+                    "group": "inline"
+                },
+                {
+                    "command": "tetrate-model-provider.copyRequestId",
+                    "when": "view == tetrate-model-provider.requests && viewItem == request-id",
                     "group": "inline"
                 }
             ]
@@ -256,6 +266,11 @@
                     "default": {},
                     "scope": "machine",
                     "markdownDescription": "Named endpoints for the **Switch Endpoint** command, for example `{ \"Production\": \"https://api.router.tetrate.ai/v1\", \"Staging\": \"https://router.tare-staging.tetrate.ai/v1\" }`. Each endpoint keeps its own API key.\n\nMachine-scoped: settable in User settings only, since the API key is sent to the selected URL."
+                },
+                "tetrate-model-provider.sessionAttribution": {
+                    "type": "boolean",
+                    "default": false,
+                    "markdownDescription": "Send a random per-window `agent-session-id` header with every request. The gateway records custom headers as OpenTelemetry span attributes, so one VS Code session's traffic can be grouped in the Console's traces. Off by default because it sends an extra identifier with each request."
                 },
                 "tetrate-model-provider.spendWarning": {
                     "type": "number",

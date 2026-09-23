@@ -21,7 +21,9 @@ export type ModelPickItem = vscode.QuickPickItem & { id?: string };
  */
 export function buildModelPickItems(
     models: readonly vscode.LanguageModelChatInformation[],
-    filter: string[]
+    filter: string[],
+    /** Provider families the gateway currently reports failing. */
+    failingProviders: ReadonlySet<string> = new Set()
 ): ModelPickItem[] {
     const byFamily = new Map<string, vscode.LanguageModelChatInformation[]>();
     for (const model of models) {
@@ -35,8 +37,9 @@ export function buildModelPickItems(
     for (const family of [...byFamily.keys()].sort((a, b) =>
         a.localeCompare(b)
     )) {
+        const failing = failingProviders.has(family);
         items.push({
-            label: family,
+            label: failing ? `${family} — failing` : family,
             kind: vscode.QuickPickItemKind.Separator,
         });
         const group = byFamily.get(family) ?? [];
@@ -45,7 +48,9 @@ export function buildModelPickItems(
             items.push({
                 label: `${capabilityIcons(model)}${model.name}`,
                 description: model.id,
-                detail: `${model.detail ?? 'Agent Router'} · ${formatContext(model)} context`,
+                detail: `${model.detail ?? 'Agent Router'} · ${formatContext(model)} context${
+                    failing ? ' · provider failing, requests may fall back' : ''
+                }`,
                 picked: isIncludedByFilter(model.id, filter),
                 id: model.id,
             });
@@ -89,9 +94,10 @@ export function formatContext(
  */
 export function pickModels(
     models: readonly vscode.LanguageModelChatInformation[],
-    filter: string[]
+    filter: string[],
+    failingProviders: ReadonlySet<string> = new Set()
 ): Promise<string[] | undefined> {
-    const items = buildModelPickItems(models, filter);
+    const items = buildModelPickItems(models, filter, failingProviders);
     const selectable = items.filter((item) => item.id !== undefined);
 
     const selectAll: vscode.QuickInputButton = {

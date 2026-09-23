@@ -17,6 +17,14 @@ A richer surface for the stats and the model list. No settings changed, and no a
 - Gateway health in the Overview view and the status report. The unauthenticated status document at the gateway root distinguishes an outage from a key problem in its own words, and `/v1/status` reports per-provider health with failure codes and ages, shown beneath a new Providers row. The hosted service serves no status document at its root; that reads as "reachable", not as an error.
 - Actionable request errors. A budget-blocked request is distinguished from a rate limit by the gateway's own header and says that retrying will not help; the four model lifecycle codes (`model_not_found`, `model_not_available`, `model_not_ready`, `model_not_routed`) each name their fix; a project-mismatch 403 lists the hostnames the key does belong to and points at **Switch Endpoint**.
 - Every request now carries an `X-Request-ID`, logged with the completion line and kept on the Recent Requests row, so a local request can be found in the service's Request Logs by the same id.
+- Fallback routing is now visible. The response names the backend that actually answered; when it differs from the requested model, the Recent Requests row shows `via <backend>`, the log line says `served by <backend>`, and the request is priced at the answering backend's rate while staying booked under the requested model. The dashboard gains a Routing section counting fallback-served requests by route, and three fallback-served requests in a row raise one hint per window that the primary may be degraded.
+- Automatic failure triage. When a request fails or stalls, the gateway status document and the provider report are fetched once and the verdict is logged: a gateway outage, a failing upstream provider, or neither. Bounded to one round per burst.
+- Failing providers are marked where models are chosen. The Overview tree and the Choose Models picker show a warning on families and models whose provider the gateway currently reports failing.
+- A **Copy Request ID** inline action on Recent Requests rows, for finding the request in the Console's Request Logs.
+- A `sessionAttribution` setting (off by default) sends a random per-window `agent-session-id` header, which the gateway records as an OpenTelemetry span attribute, so one session's traffic can be grouped in traces.
+- A `reasoningEffort` override now also sends `x-tars-supports-reasoning`, so thinking fields are not stripped toward an OpenAI-shaped backend the catalog mislabels.
+- Fields the gateway drops when translating a request across providers (`x-tars-dropped-fields`) are logged instead of vanishing silently.
+- A `model_not_ready` failure shows a one-time hint with the gateway's suggested retry delay.
 
 ## 0.5.0
 

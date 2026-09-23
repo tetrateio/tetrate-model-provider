@@ -15,6 +15,8 @@ export type ProviderConfig = {
     profiles: Record<string, string>;
     /** Dollars per day before a warning is raised; 0 disables the warning. */
     spendWarning: number;
+    /** Send a per-window agent-session-id header for trace attribution. */
+    sessionAttribution: boolean;
 };
 
 /** Effort levels the OpenAI protocol accepts for `reasoning_effort`. */
@@ -54,6 +56,7 @@ export function getConfig(): ProviderConfig {
             config.get<Record<string, unknown>>('profiles', {})
         ),
         spendWarning: sanitizeSpendWarning(config.get('spendWarning')),
+        sessionAttribution: config.get('sessionAttribution') === true,
     };
 }
 

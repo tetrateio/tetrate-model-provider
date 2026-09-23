@@ -211,6 +211,9 @@ export const Uri = {
 
 export const env = {
     openExternal: () => Promise.resolve(true),
+    clipboard: {
+        writeText: () => Promise.resolve(),
+    },
 };
 
 export const window = {

@@ -402,6 +402,215 @@ describe('provideLanguageModelChatResponse', () => {
         );
     });
 
+    it('reports the answering backend when it differs from the requested id', async () => {
+        const fallback = (delta: Delta, finishReason: FinishReason = null) => ({
+            ...chunk(delta, finishReason),
+            model: 'vertexanthropic/claude-test',
+        });
+        const h = harness(
+            {
+                steps: [
+                    fallback({ content: 'hi' }),
+                    fallback({}, 'stop'),
+                    {
+                        ...usageChunk({
+                            prompt_tokens: 1_000_000,
+                            completion_tokens: 0,
+                            total_tokens: 1_000_000,
+                        }),
+                        model: 'vertexanthropic/claude-test',
+                    },
+                ],
+            },
+            {
+                // Only the answering backend has a price, so the booked cost
+                // proves the fallback's rate was used.
+                storedCatalog: {
+                    fetchedAt: Date.now(),
+                    models: [
+                        {
+                            model: 'vertexanthropic/claude-test',
+                            inputTokensPricePer1M: 4,
+                            outputTokensPricePer1M: 20,
+                        },
+                    ],
+                },
+            }
+        );
+        const listener = vi.fn();
+        h.provider.usage.subscribe(listener);
+
+        await h.run();
+
+        expect(listener).toHaveBeenCalledWith(
+            expect.objectContaining({
+                modelId: MODEL.id,
+                meta: expect.objectContaining({
+                    servedBy: 'vertexanthropic/claude-test',
+                }) as unknown,
+            })
+        );
+        expect(h.provider.usage.totalCost).toBeCloseTo(4);
+        expect(h.log.info).toHaveBeenCalledWith(
+            expect.stringContaining('served by vertexanthropic/claude-test')
+        );
+    });
+
+    it('reports no servedBy when the response echoes the requested id', async () => {
+        const h = harness({
+            steps: [
+                text('hi'),
+                finish('stop'),
+                usageChunk({
+                    prompt_tokens: 10,
+                    completion_tokens: 5,
+                    total_tokens: 15,
+                }),
+            ],
+        });
+        const listener = vi.fn();
+        h.provider.usage.subscribe(listener);
+
+        await h.run();
+
+        const event = listener.mock.calls[0]?.[0] as {
+            meta?: { servedBy?: string };
+        };
+        expect(event.meta?.servedBy).toBeUndefined();
+    });
+
+    it('runs the outage triage when a request fails', async () => {
+        const h = harness(
+            {
+                rejectWith: new OpenAI.APIError(
+                    503,
+                    { message: 'upstream exploded' },
+                    'upstream exploded',
+                    new Headers()
+                ),
+            },
+            {
+                gatewayStatus: { reachable: true, status: 'serving' },
+                providerReport: {
+                    providers: [
+                        {
+                            name: 'anthropic',
+                            reachable: false,
+                            observedRequests: 3,
+                            failures: 3,
+                            lastFailureCode: '529',
+                        },
+                    ],
+                },
+            }
+        );
+
+        await rejection(h.run());
+        await flush();
+
+        expect(h.log.info).toHaveBeenCalledWith(
+            expect.stringContaining('Triage: gateway serving')
+        );
+        expect(h.log.warn).toHaveBeenCalledWith(
+            expect.stringContaining('Triage: provider anthropic failing (529)')
+        );
+    });
+
+    it('names the gateway as the problem when it reports not serving', async () => {
+        const h = harness(
+            {
+                rejectWith: new OpenAI.APIError(
+                    503,
+                    { message: 'boom' },
+                    'boom',
+                    new Headers()
+                ),
+            },
+            {
+                gatewayStatus: {
+                    reachable: true,
+                    status: 'not_serving',
+                    message: 'upgrade',
+                },
+            }
+        );
+
+        await rejection(h.run());
+        await flush();
+
+        expect(h.log.info).toHaveBeenCalledWith(
+            expect.stringContaining(
+                'the gateway itself is the problem'
+            )
+        );
+    });
+
+    it('sends the attribution header only when opted in', async () => {
+        const { configValues } = vscode as unknown as {
+            configValues: Record<string, unknown>;
+        };
+        try {
+            configValues.sessionAttribution = true;
+            const h = harness({ steps: [finish('stop')] });
+            await h.run();
+            const opted = h.clientOptions[0] as {
+                defaultHeaders: Record<string, string>;
+            };
+            expect(opted.defaultHeaders['agent-session-id']).toMatch(/^[0-9a-f-]{36}$/);
+
+            delete configValues.sessionAttribution;
+            const plain = harness({ steps: [finish('stop')] });
+            await plain.run();
+            const defaults = plain.clientOptions[0] as {
+                defaultHeaders: Record<string, string>;
+            };
+            expect(defaults.defaultHeaders['agent-session-id']).toBeUndefined();
+        } finally {
+            delete configValues.sessionAttribution;
+        }
+    });
+
+    it('marks the model reasoning-capable when a reasoning override is set', async () => {
+        const { configValues } = vscode as unknown as {
+            configValues: Record<string, unknown>;
+        };
+        configValues.modelOverrides = {
+            'claude-*': { reasoningEffort: 'high' },
+        };
+        try {
+            const h = harness({ steps: [finish('stop')] });
+            await h.run();
+            expect(
+                h.requests[0]?.headers?.['x-tars-supports-reasoning']
+            ).toBe('true');
+        } finally {
+            delete configValues.modelOverrides;
+        }
+
+        const plain = harness({ steps: [finish('stop')] });
+        await plain.run();
+        expect(
+            plain.requests[0]?.headers?.['x-tars-supports-reasoning']
+        ).toBeUndefined();
+    });
+
+    it('logs the fields the gateway dropped crossing providers', async () => {
+        const h = harness({
+            steps: [text('hi'), finish('stop')],
+            responseHeaders: {
+                'x-tars-dropped-fields': 'web_search_20250305',
+            },
+        });
+
+        await h.run();
+
+        expect(h.log.warn).toHaveBeenCalledWith(
+            expect.stringContaining(
+                'dropped request fields crossing providers: web_search_20250305'
+            )
+        );
+    });
+
     it('sends a unique X-Request-ID for Request Logs correlation', async () => {
         const h = harness({ steps: [finish('stop')] });
 
@@ -804,7 +1013,11 @@ function texts(parts: readonly vscode.LanguageModelResponsePart[]): string[] {
 type Step = Chunk | { wait: number } | { fail: unknown } | { hang: true };
 
 type Behaviour =
-    | { steps: Step[]; onAbort?: 'throw' | 'end' }
+    | {
+          steps: Step[];
+          onAbort?: 'throw' | 'end';
+          responseHeaders?: Record<string, string>;
+      }
     | { rejectWith: unknown };
 
 type Request = {
@@ -886,16 +1099,39 @@ function fakeClient(behaviour: Behaviour) {
                 signal: options.signal,
                 headers: options.headers,
             });
-            if ('rejectWith' in behaviour) {
-                return Promise.reject(behaviour.rejectWith);
-            }
-            return Promise.resolve(
-                scriptedStream(
-                    behaviour.steps,
-                    options.signal,
-                    behaviour.onAbort ?? 'throw'
-                )
-            );
+            // Mirrors the SDK's APIPromise: awaitable directly, and also
+            // carrying withResponse() for callers that need the headers.
+            const outcome: Promise<unknown> =
+                'rejectWith' in behaviour
+                    ? Promise.reject(behaviour.rejectWith)
+                    : Promise.resolve(
+                          scriptedStream(
+                              behaviour.steps,
+                              options.signal,
+                              behaviour.onAbort ?? 'throw'
+                          )
+                      );
+            // The provider only awaits withResponse when present, so the
+            // bare rejection would otherwise count as unhandled.
+            outcome.catch(() => undefined);
+            const pending = outcome as Promise<unknown> & {
+                withResponse(): Promise<{
+                    data: unknown;
+                    response: { headers: Headers };
+                }>;
+            };
+            pending.withResponse = () =>
+                outcome.then((data) => ({
+                    data,
+                    response: {
+                        headers: new Headers(
+                            'responseHeaders' in behaviour
+                                ? behaviour.responseHeaders
+                                : {}
+                        ),
+                    },
+                }));
+            return pending;
         }
     );
     return {
@@ -931,6 +1167,9 @@ type HarnessOptions = {
     storedKey?: string | undefined;
     /** Served as the persisted public-catalog cache, for pricing lookups. */
     storedCatalog?: unknown;
+    /** What the stubbed health triage reports. */
+    gatewayStatus?: import('./health').GatewayStatus;
+    providerReport?: import('./health').ProviderReport;
 };
 
 function harness(behaviour: Behaviour, options: HarnessOptions = {}) {
@@ -944,10 +1183,22 @@ function harness(behaviour: Behaviour, options: HarnessOptions = {}) {
             update: () => Promise.resolve(),
         },
     };
+    const clientOptions: unknown[] = [];
     const provider = new TetrateChatModelProvider(
         context as unknown as vscode.ExtensionContext,
         log as unknown as vscode.LogOutputChannel,
-        () => fake.client
+        (createOptions) => {
+            clientOptions.push(createOptions);
+            return fake.client;
+        },
+        // Stubbed so a failing test request never triages over the network.
+        {
+            gateway: () =>
+                Promise.resolve(
+                    options.gatewayStatus ?? { reachable: true as const }
+                ),
+            providers: () => Promise.resolve(options.providerReport),
+        }
     );
     const parts: vscode.LanguageModelResponsePart[] = [];
     const token = cancellationToken();
@@ -975,6 +1226,7 @@ function harness(behaviour: Behaviour, options: HarnessOptions = {}) {
         token,
         provider,
         create: fake.create,
+        clientOptions,
         requests: fake.requests,
     };
 }

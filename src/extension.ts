@@ -60,7 +60,7 @@ export function activate(context: vscode.ExtensionContext) {
     const history = new UsageHistory(context.globalState);
     const requestLog = new RequestLog(context.globalState);
 
-    const dashboard = new UsageDashboard(history, provider.usage);
+    const dashboard = new UsageDashboard(history, provider.usage, requestLog);
 
     // Appears after the first completed request and shows the session cost, or
     // the token count when no price is known, and a spinner while a request
@@ -126,6 +126,8 @@ export function activate(context: vscode.ExtensionContext) {
     // At most one warning per window: the point is to interrupt a runaway
     // agent session once, not to nag every request after the threshold.
     let spendWarned = false;
+    let fallbackStreak = 0;
+    let fallbackHinted = false;
     const warnOnSpend = async () => {
         const threshold = getConfig().spendWarning;
         if (spendWarned || threshold <= 0) {
@@ -308,6 +310,19 @@ export function activate(context: vscode.ExtensionContext) {
             tree.refresh();
         }),
         provider.usage.subscribe((event) => {
+            // A run of fallback-served requests means the primary is likely
+            // degraded; one hint per window, reset by any direct answer.
+            if (event.meta?.servedBy) {
+                fallbackStreak += 1;
+                if (fallbackStreak >= 3 && !fallbackHinted) {
+                    fallbackHinted = true;
+                    vscode.window.showInformationMessage(
+                        'Recent Agent Router requests are being served by fallback backends; the primary model may be degraded. The Recent Requests view names the backends.'
+                    );
+                }
+            } else {
+                fallbackStreak = 0;
+            }
             requestLog.add({
                 at: Date.now(),
                 modelId: event.modelId,
@@ -323,6 +338,9 @@ export function activate(context: vscode.ExtensionContext) {
                     : {}),
                 ...(event.meta?.requestId
                     ? { requestId: event.meta.requestId }
+                    : {}),
+                ...(event.meta?.servedBy
+                    ? { servedBy: event.meta.servedBy }
                     : {}),
             });
             void history
@@ -505,7 +523,17 @@ export function activate(context: vscode.ExtensionContext) {
                     return;
                 }
 
-                const selected = await pickModels(all, config.modelFilter);
+                const report = await providerReport();
+                const failing = new Set(
+                    (report?.providers ?? [])
+                        .filter((provider) => provider.reachable === false)
+                        .map((provider) => provider.name.toLowerCase())
+                );
+                const selected = await pickModels(
+                    all,
+                    config.modelFilter,
+                    failing
+                );
                 if (selected === undefined) {
                     return;
                 }
@@ -574,6 +602,19 @@ export function activate(context: vscode.ExtensionContext) {
             async (node?: unknown) => {
                 await removeProfileFlow(profileNameOf(node));
                 tree.refresh();
+            }
+        ),
+
+        vscode.commands.registerCommand(
+            'tetrate-model-provider.copyRequestId',
+            async (record?: { requestId?: string }) => {
+                if (!record?.requestId) {
+                    return;
+                }
+                await vscode.env.clipboard.writeText(record.requestId);
+                vscode.window.showInformationMessage(
+                    'Request id copied. The Console’s Request Logs are searchable by it.'
+                );
             }
         ),
 

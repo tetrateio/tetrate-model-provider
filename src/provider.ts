@@ -17,6 +17,12 @@ import {
     overridesFor,
     type ProviderConfig,
 } from './config';
+import {
+    describeGateway,
+    describeProvider,
+    fetchGatewayStatus,
+    fetchProviderReport,
+} from './health';
 import { convertMessages, convertToolMode, convertTools } from './messages';
 import { getApiKey, promptForApiKey } from './secrets';
 import { countTokens } from './tokenCount';
@@ -115,13 +121,24 @@ export class TetrateChatModelProvider
     /** Disambiguates synthesized tool-call ids across turns; see finish(). */
     private turn = 0;
 
+    /** One id per window for the opt-in attribution header; see client(). */
+    private readonly sessionId = crypto.randomUUID();
+
+    /** Bounds the failure triage to one health round per window per burst. */
+    private lastTriageAt = 0;
+
     constructor(
         private readonly context: vscode.ExtensionContext,
         private readonly log: vscode.LogOutputChannel,
         /** Lets tests substitute a scripted client; production uses the SDK. */
         private readonly createClient: (options: ClientOptions) => OpenAI = (
             options
-        ) => new OpenAI(options)
+        ) => new OpenAI(options),
+        /** Injectable so unit tests never reach the network for triage. */
+        private readonly health = {
+            gateway: fetchGatewayStatus,
+            providers: fetchProviderReport,
+        }
     ) {}
 
     dispose(): void {
@@ -302,7 +319,8 @@ export class TetrateChatModelProvider
         const activityHandle = this.activity.begin(model.id);
         try {
             const tools = convertTools(options.tools);
-            const stream = await this.client(config, apiKey).chat.completions.create(
+            const override = overridesFor(model.id, config.modelOverrides);
+            const pending = this.client(config, apiKey).chat.completions.create(
                 {
                     // Callers may pass provider-specific knobs such as
                     // temperature, max_tokens or reasoning_effort straight
@@ -312,9 +330,7 @@ export class TetrateChatModelProvider
                     // overrides sit in between: they are the user's own
                     // setting, so they outrank a calling extension's defaults.
                     ...(options.modelOptions ?? {}),
-                    ...overrideParams(
-                        overridesFor(model.id, config.modelOverrides)
-                    ),
+                    ...overrideParams(override),
                     model: model.id,
                     messages: chatMessages,
                     stream: true,
@@ -330,17 +346,48 @@ export class TetrateChatModelProvider
                 },
                 {
                     signal: controller.signal,
-                    // Echoed back as x-client-request-id and indexed by the
-                    // service's Request Logs, so one id correlates the local
-                    // record with the server-side one.
-                    headers: { 'X-Request-ID': requestId },
+                    headers: {
+                        // Echoed back as x-client-request-id and indexed by
+                        // the service's Request Logs, so one id correlates
+                        // the local record with the server-side one.
+                        'X-Request-ID': requestId,
+                        // A reasoning-effort override marks the model as
+                        // reasoning-capable for this call, so the gateway
+                        // does not strip thinking fields toward an
+                        // OpenAI-shaped backend the catalog mislabels.
+                        ...(override.reasoningEffort !== undefined
+                            ? { 'x-tars-supports-reasoning': 'true' }
+                            : {}),
+                    },
                 }
             );
+
+            // withResponse() exposes the response headers, where the gateway
+            // names any fields it dropped translating across providers. The
+            // fallback path keeps scripted test clients working.
+            let responseHeaders: Headers | undefined;
+            const stream = await (async () => {
+                const withResponse = (
+                    pending as {
+                        withResponse?: () => Promise<{
+                            data: Awaited<typeof pending>;
+                            response: { headers: Headers };
+                        }>;
+                    }
+                ).withResponse;
+                if (typeof withResponse === 'function') {
+                    const result = await withResponse.call(pending);
+                    responseHeaders = result.response.headers;
+                    return result.data;
+                }
+                return pending;
+            })();
 
             const toolCalls = new ToolCallAccumulator(`call_${this.turn++}`);
             const startedAt = Date.now();
             let firstOutputAt: number | undefined;
             let finishReason: string | undefined;
+            let servedBy: string | undefined;
             let usage: OpenAI.Completions.CompletionUsage | undefined;
             let reportedText = 0;
             let outputStarted = false;
@@ -351,6 +398,12 @@ export class TetrateChatModelProvider
             for await (const chunk of stream) {
                 if (chunk.usage) {
                     usage = chunk.usage;
+                }
+                // The response names the backend that actually answered,
+                // which differs from the requested id under fallback routing
+                // or a model-name override on the key.
+                if (chunk.model && chunk.model !== model.id) {
+                    servedBy = chunk.model;
                 }
                 const choice = chunk.choices[0];
                 if (choice?.finish_reason) {
@@ -390,6 +443,15 @@ export class TetrateChatModelProvider
                 return;
             }
 
+            // Silent capability loss is the docs' stated risk of crossing
+            // providers; the gateway names what it removed, so say so.
+            const dropped = responseHeaders?.get('x-tars-dropped-fields');
+            if (dropped) {
+                this.log.warn(
+                    `${model.id}: the gateway dropped request fields crossing providers: ${dropped}`
+                );
+            }
+
             // Arguments arrive as string fragments, so a call is only reportable
             // once the stream has finished delivering it.
             const calls = toolCalls.finish();
@@ -424,11 +486,13 @@ export class TetrateChatModelProvider
                     finishedAt: Date.now(),
                 },
                 finishReason,
-                requestId
+                requestId,
+                servedBy
             );
         } catch (error) {
             if (stalled) {
                 this.log.error(stalled.message);
+                void this.triage(config, apiKey);
                 throw stalled;
             }
             if (isAbort(error) || token.isCancellationRequested) {
@@ -437,6 +501,8 @@ export class TetrateChatModelProvider
             this.log.error(
                 `Request to ${model.id} failed: ${describe(error)}`
             );
+            void this.triage(config, apiKey);
+            this.offerRetryHint(error, model.id);
             throw toLanguageModelError(error);
         } finally {
             this.activity.end(activityHandle);
@@ -505,7 +571,8 @@ export class TetrateChatModelProvider
         usage: OpenAI.Completions.CompletionUsage | undefined,
         timing: RequestTiming,
         finishReason: string | undefined,
-        requestId: string
+        requestId: string,
+        servedBy: string | undefined
     ): void {
         if (!usage) {
             this.log.info(
@@ -520,20 +587,22 @@ export class TetrateChatModelProvider
             reasoningTokens:
                 usage.completion_tokens_details?.reasoning_tokens ?? 0,
         };
-        const cost = this.usage.record(
-            modelId,
-            request,
-            this.pricingFor(modelId),
-            {
-                durationMs: timing.finishedAt - timing.startedAt,
-                firstOutputMs:
-                    timing.firstOutputAt !== undefined
-                        ? timing.firstOutputAt - timing.startedAt
-                        : undefined,
-                finishReason,
-                requestId,
-            }
-        );
+        // The answering backend's price is the one that was charged; the
+        // requested id keeps the aggregation key so a model's totals stay in
+        // one row even when some requests fell back.
+        const pricing = servedBy
+            ? (this.pricingFor(servedBy) ?? this.pricingFor(modelId))
+            : this.pricingFor(modelId);
+        const cost = this.usage.record(modelId, request, pricing, {
+            durationMs: timing.finishedAt - timing.startedAt,
+            firstOutputMs:
+                timing.firstOutputAt !== undefined
+                    ? timing.firstOutputAt - timing.startedAt
+                    : undefined,
+            finishReason,
+            requestId,
+            ...(servedBy ? { servedBy } : {}),
+        });
 
         const cached =
             request.cachedInputTokens > 0
@@ -546,8 +615,94 @@ export class TetrateChatModelProvider
         this.log.info(
             `${modelId}: ${formatTokens(request.inputTokens)} in${cached} + ${formatTokens(request.outputTokens)} out${reasoning}${
                 cost !== undefined ? ` ≈ ${formatCost(cost)}` : ''
-            } (${describeTiming(timing)}) · ${requestId}`
+            }${servedBy ? ` · served by ${servedBy}` : ''} (${describeTiming(timing)}) · ${requestId}`
         );
+    }
+
+    /**
+     * The docs' outage triage, run automatically when a request fails: the
+     * status document tells a gateway problem from everything else, and the
+     * provider report names an upstream that is failing. Logged rather than
+     * toasted, because the chat view already shows the request's own error;
+     * bounded to one round per burst so a failing loop does not add load.
+     */
+    private async triage(
+        config: ProviderConfig,
+        apiKey: string
+    ): Promise<void> {
+        const now = Date.now();
+        if (now - this.lastTriageAt < 30_000) {
+            return;
+        }
+        this.lastTriageAt = now;
+        try {
+            const gateway = await this.health.gateway(config.baseUrl);
+            this.log.info(`Triage: gateway ${describeGateway(gateway)}`);
+            if (!gateway.reachable || gateway.status === 'not_serving') {
+                this.log.info(
+                    'Triage: the gateway itself is the problem; this is not the API key or the request.'
+                );
+                return;
+            }
+            const report = await this.health.providers(
+                config.baseUrl,
+                apiKey,
+                config.requestHeaders
+            );
+            if (!report) {
+                this.log.info(
+                    'Triage: this gateway serves no provider report (/v1/status).'
+                );
+                return;
+            }
+            const failing = report.providers.filter(
+                (provider) => provider.reachable === false
+            );
+            for (const provider of failing) {
+                this.log.warn(
+                    `Triage: provider ${provider.name} ${describeProvider(provider)} — the failure was likely provider-side.`
+                );
+            }
+            if (failing.length === 0) {
+                this.log.info(
+                    'Triage: gateway serving, no provider failing in the observation window.'
+                );
+            }
+        } catch {
+            // Triage must never add a second failure to the first.
+        }
+    }
+
+    /**
+     * `model_not_ready` is the one error whose fix is purely waiting, so it
+     * gets a toast with the gateway's own suggested delay. Once per model per
+     * window: propagation takes seconds, not sessions.
+     */
+    private readonly retryHinted = new Set<string>();
+    private offerRetryHint(error: unknown, modelId: string): void {
+        if (!(error instanceof OpenAI.APIError)) {
+            return;
+        }
+        const code =
+            error.code ?? (error.error as { code?: string } | undefined)?.code;
+        if (code !== 'model_not_ready' || this.retryHinted.has(modelId)) {
+            return;
+        }
+        this.retryHinted.add(modelId);
+        const after = error.headers?.get?.('retry-after');
+        const showStatus = 'Show Connection Status';
+        void vscode.window
+            .showWarningMessage(
+                `Agent Router: ${modelId} is provisioned but not active yet. The gateway suggests retrying in ${after ?? 'a few'}s.`,
+                showStatus
+            )
+            .then((action) =>
+                action === showStatus
+                    ? vscode.commands.executeCommand(
+                          'tetrate-model-provider.showStatus'
+                      )
+                    : undefined
+            );
     }
 
     private pricingFor(modelId: string): ModelPricing | undefined {
@@ -615,6 +770,13 @@ export class TetrateChatModelProvider
             maxRetries: 2,
             defaultHeaders: {
                 'User-Agent': USER_AGENT,
+                // The gateway records custom headers as OpenTelemetry span
+                // attributes, so this groups one window's traffic in the
+                // Console's traces. Opt-in: it sends a new identifier off the
+                // machine, even if only a random one.
+                ...(config.sessionAttribution
+                    ? { 'agent-session-id': this.sessionId }
+                    : {}),
                 ...config.requestHeaders,
             },
         });

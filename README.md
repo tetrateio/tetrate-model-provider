@@ -90,6 +90,7 @@ Secret storage is per-machine and does not sync across Settings Sync.
 | `tetrate-model-provider.modelOverrides` | object | `{}` | window | Per-model budgets and request defaults, keyed by glob pattern. |
 | `tetrate-model-provider.requestHeaders` | object | `{}` | machine | Extra HTTP headers sent with every request. |
 | `tetrate-model-provider.profiles` | object | `{}` | machine | Named endpoints for the **Switch Endpoint** command. |
+| `tetrate-model-provider.sessionAttribution` | boolean | `false` | window | Send a per-window `agent-session-id` header, recorded by the gateway as a trace attribute. |
 | `tetrate-model-provider.spendWarning` | number | `0` | window | Warn once the day's estimated cost reaches this many dollars. `0` disables it. |
 
 `baseUrl` and `requestHeaders` are machine-scoped, so they can be set in User settings but not in a workspace or folder `settings.json`. Both decide where the API key is sent, and a cloned repository must not be able to point it somewhere else. `modelFilter` only narrows the picker, so it stays settable per workspace.
@@ -213,11 +214,11 @@ Costs are estimates computed from the public catalog's current prices; the Agent
 
 A **Tetrate Agent Router** icon in the activity bar opens the Overview view, which gathers the moving parts in one place:
 
-- **Endpoint**: the base URL with its profile name, the key status, the catalog age, and the configured profiles with the current one marked. Each row is clickable and runs the matching command, and profiles are added and removed from here.
-- **Models**: every model the key can reach, grouped by provider, with the id and context window on each row. The checkbox on each row edits the model filter in place, a family checkbox toggles the whole group, and once requests have been made a row shows its median time to first output. An inline action opens the chat view.
+- **Endpoint**: the base URL with its profile name, the gateway's own health, per-provider health from the gateway's observation window, the key status, the catalog age, and the configured profiles with the current one marked. Each row is clickable and runs the matching command, and profiles are added and removed from here.
+- **Models**: every model the key can reach, grouped by provider, with the id and context window on each row. The checkbox on each row edits the model filter in place, a family checkbox toggles the whole group, and once requests have been made a row shows its median time to first output. A provider the gateway reports failing is marked on its families and models. An inline action opens the chat view.
 - **Usage**: the session, today, and the last seven days. Each row opens the dashboard.
 
-A **Recent Requests** view below it lists the last 50 completed requests, newest first, with tokens, cost, duration, and an icon marking truncated or filtered answers.
+A **Recent Requests** view below it lists the last 50 completed requests, newest first, with tokens, cost, duration, an icon marking truncated or filtered answers, and a `via <backend>` marker when fallback routing or a model-name override answered with a different backend. An inline action copies the request id, which finds the request in the Console's Request Logs. When a request fails, the output channel logs a triage verdict: whether the gateway itself, an upstream provider, or neither is the problem.
 
 When no API key is stored for the configured endpoint, the view shows the setup buttons instead. **Tetrate Agent Router: Test Connection** confirms a fresh setup end to end by sending a one-token completion and reporting the round trip.
 

@@ -32,10 +32,14 @@ export type TreeNode =
     | { kind: 'profiles' }
     | { kind: 'profile'; name: string; url: string }
     | { kind: 'providerHealth' }
-    // `allIncluded` is computed while listing, because getTreeItem is
-    // synchronous and cannot await the model list to derive it there.
-    | { kind: 'family'; name: string; allIncluded: boolean }
-    | { kind: 'model'; info: vscode.LanguageModelChatInformation };
+    // `allIncluded` and `failing` are computed while listing, because
+    // getTreeItem is synchronous and cannot await anything to derive them.
+    | { kind: 'family'; name: string; allIncluded: boolean; failing?: boolean }
+    | {
+          kind: 'model';
+          info: vscode.LanguageModelChatInformation;
+          providerFailing?: boolean;
+      };
 
 export type TreeDeps = {
     /** Whether a key is stored for the configured endpoint. */
@@ -114,13 +118,39 @@ export class AgentRouterTreeProvider
             return this.providerChildren();
         }
         if (node.kind === 'family') {
-            const models = await this.deps.listAllModels();
+            const [models, failing] = await Promise.all([
+                this.deps.listAllModels(),
+                this.failingProviders(),
+            ]);
             return models
                 .filter((info) => (info.family || 'other') === node.name)
                 .sort((a, b) => a.name.localeCompare(b.name))
-                .map((info) => ({ kind: 'model', info }) as TreeNode);
+                .map(
+                    (info) =>
+                        ({
+                            kind: 'model',
+                            info,
+                            ...(failing.has(node.name)
+                                ? { providerFailing: true }
+                                : {}),
+                        }) as TreeNode
+                );
         }
         return [];
+    }
+
+    /**
+     * Provider families currently failing per /v1/status. Family names come
+     * from the provider name, so the join is direct; the report is memoized
+     * upstream, so this is cheap to consult on every listing.
+     */
+    private async failingProviders(): Promise<Set<string>> {
+        const report = await this.deps.providerReport();
+        return new Set(
+            (report?.providers ?? [])
+                .filter((provider) => provider.reachable === false)
+                .map((provider) => provider.name.toLowerCase())
+        );
     }
 
     getTreeItem(node: TreeNode): vscode.TreeItem {
@@ -185,6 +215,12 @@ export class AgentRouterTreeProvider
             item.checkboxState = node.allIncluded
                 ? vscode.TreeItemCheckboxState.Checked
                 : vscode.TreeItemCheckboxState.Unchecked;
+            if (node.failing) {
+                item.description = 'provider failing';
+                item.iconPath = new vscode.ThemeIcon('warning');
+                item.tooltip =
+                    'The gateway reports this provider failing; requests may fall back.';
+            }
             return item;
         }
         if (node.kind === 'model') {
@@ -202,13 +238,23 @@ export class AgentRouterTreeProvider
             const latency = this.deps.latencyOf(node.info.id);
             item.description = `${node.info.id} · ${formatContext(node.info)}${
                 latency ? ` · ~${formatSeconds(latency.medianMs)}` : ''
-            }`;
-            item.tooltip = latency
-                ? [
-                      ...(node.info.tooltip ? [node.info.tooltip] : []),
-                      `Median first output: ${formatSeconds(latency.medianMs)} over ${latency.samples} request(s).`,
-                  ].join('\n')
-                : node.info.tooltip;
+            }${node.providerFailing ? ' · provider failing' : ''}`;
+            item.tooltip = [
+                ...(node.info.tooltip ? [node.info.tooltip] : []),
+                ...(latency
+                    ? [
+                          `Median first output: ${formatSeconds(latency.medianMs)} over ${latency.samples} request(s).`,
+                      ]
+                    : []),
+                ...(node.providerFailing
+                    ? [
+                          'The gateway reports this provider failing; requests may fall back.',
+                      ]
+                    : []),
+            ].join('\n');
+            if (node.providerFailing) {
+                item.iconPath = new vscode.ThemeIcon('warning');
+            }
             return item;
         }
         const item = new vscode.TreeItem(
@@ -385,6 +431,7 @@ export class AgentRouterTreeProvider
             ];
         }
         const filter = getConfig().modelFilter;
+        const failing = await this.failingProviders();
         const families = [
             ...new Set(models.map((info) => info.family || 'other')),
         ].sort((a, b) => a.localeCompare(b));
@@ -394,6 +441,7 @@ export class AgentRouterTreeProvider
             allIncluded: models
                 .filter((info) => (info.family || 'other') === name)
                 .every((info) => isIncludedByFilter(info.id, filter)),
+            ...(failing.has(name) ? { failing: true } : {}),
         }));
     }
 

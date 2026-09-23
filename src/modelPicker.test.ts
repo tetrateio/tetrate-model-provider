@@ -83,6 +83,22 @@ describe('buildModelPickItems', () => {
         );
     });
 
+    it('marks a failing provider on its separator and its models', () => {
+        const items = buildModelPickItems(models, [], new Set(['anthropic']));
+
+        const separator = items.find(
+            (item) =>
+                item.kind === vscode.QuickPickItemKind.Separator &&
+                item.label.startsWith('anthropic')
+        );
+        expect(separator?.label).toBe('anthropic — failing');
+
+        const opus = items.find((item) => item.id === 'claude-opus-5');
+        expect(opus?.detail).toContain('provider failing');
+        const gpt = items.find((item) => item.id === 'gpt-5-mini');
+        expect(gpt?.detail).not.toContain('provider failing');
+    });
+
     it('pre-selects models the current filter includes', () => {
         const items = buildModelPickItems(models, ['claude-*']);
 

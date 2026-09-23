@@ -63,6 +63,12 @@ export type RequestMeta = {
     finishReason?: string;
     /** The X-Request-ID sent with the request; the Request Logs search key. */
     requestId?: string;
+    /**
+     * The backend that actually answered, when it differs from the requested
+     * id: the response's own `model` field names it under fallback routing or
+     * a model-name override.
+     */
+    servedBy?: string;
 };
 
 /** What subscribers receive for each completed request. */

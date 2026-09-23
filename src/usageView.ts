@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 
+import type { RequestLog, RequestRecord } from './requestLog';
 import { formatCost, formatTokens, type UsageTracker } from './usage';
 import type { DayTotals, ModelBreakdownRow, UsageHistory } from './usageHistory';
 
@@ -125,12 +126,19 @@ export type DashboardData = {
         /** Mean daily spend over the trailing 7 full days, today excluded. */
         dailyAverage7: number;
     };
+    /** How the recent requests were routed, from the local request log. */
+    routing: {
+        recent: number;
+        fallbacks: number;
+        routes: Array<{ modelId: string; servedBy: string; count: number }>;
+    };
 };
 
 export function dashboardData(
     history: UsageHistory,
     session: UsageTracker,
-    now: number = Date.now()
+    now: number = Date.now(),
+    recentRequests: readonly RequestRecord[] = []
 ): DashboardData {
     const breakdowns: Record<number, ModelBreakdownRow[]> = {};
     for (const window of DASHBOARD_WINDOWS) {
@@ -142,6 +150,41 @@ export function dashboardData(
         session: session.perModel(),
         sessionHeadline: session.headline(),
         forecast: forecast(history, now),
+        routing: routingOf(recentRequests),
+    };
+}
+
+/**
+ * Fallback routing is otherwise only visible one request at a time; counting
+ * the recent log's `servedBy` markers shows whether falling back is the
+ * exception or has quietly become the rule.
+ */
+function routingOf(
+    records: readonly RequestRecord[]
+): DashboardData['routing'] {
+    const byRoute = new Map<
+        string,
+        { modelId: string; servedBy: string; count: number }
+    >();
+    let fallbacks = 0;
+    for (const record of records) {
+        if (!record.servedBy) {
+            continue;
+        }
+        fallbacks += 1;
+        const key = JSON.stringify([record.modelId, record.servedBy]);
+        const route = byRoute.get(key) ?? {
+            modelId: record.modelId,
+            servedBy: record.servedBy,
+            count: 0,
+        };
+        route.count += 1;
+        byRoute.set(key, route);
+    }
+    return {
+        recent: records.length,
+        fallbacks,
+        routes: [...byRoute.values()].sort((a, b) => b.count - a.count),
     };
 }
 
@@ -256,6 +299,10 @@ export function renderUsageDashboard(
         </tr></thead>
         <tbody></tbody>
     </table>
+
+    <h2>Routing</h2>
+    <div class="muted" id="routing-summary"></div>
+    <ul id="routing-routes" class="muted"></ul>
 
     <h2>This session</h2>
     <div class="muted" id="session-headline"></div>
@@ -379,16 +426,38 @@ export function renderUsageDashboard(
             fillTable(document.querySelector('#session tbody'), data.session);
         }
 
+        function renderRouting() {
+            const routing = data.routing || { recent: 0, fallbacks: 0, routes: [] };
+            document.getElementById('routing-summary').textContent =
+                routing.recent === 0
+                    ? 'No recent requests recorded.'
+                    : routing.fallbacks === 0
+                      ? 'All ' + fmt(routing.recent)
+                        + ' recent request(s) were answered by the requested model.'
+                      : fmt(routing.fallbacks) + ' of ' + fmt(routing.recent)
+                        + ' recent request(s) were served by a fallback or override.';
+            const list = document.getElementById('routing-routes');
+            list.textContent = '';
+            for (const route of routing.routes) {
+                const item = document.createElement('li');
+                item.textContent = route.modelId + ' → ' + route.servedBy
+                    + ' × ' + fmt(route.count);
+                list.appendChild(item);
+            }
+        }
+
         window.addEventListener('message', (event) => {
             const message = event.data;
             if (message && message.type === 'data') {
                 data = message.data;
                 renderSession();
+                renderRouting();
                 render(currentWindow);
             }
         });
 
         renderSession();
+        renderRouting();
         render(7);
     </script>
 </body>
@@ -404,14 +473,21 @@ export class UsageDashboard {
 
     constructor(
         private readonly history: UsageHistory,
-        private readonly session: UsageTracker
+        private readonly session: UsageTracker,
+        private readonly requestLog?: RequestLog
     ) {}
 
-    show(): void {
-        const html = renderUsageDashboard(
-            dashboardData(this.history, this.session),
-            nonce()
+    private data(): DashboardData {
+        return dashboardData(
+            this.history,
+            this.session,
+            Date.now(),
+            this.requestLog?.records() ?? []
         );
+    }
+
+    show(): void {
+        const html = renderUsageDashboard(this.data(), nonce());
         if (this.panel) {
             this.panel.webview.html = html;
             this.panel.reveal();
@@ -439,7 +515,7 @@ export class UsageDashboard {
         }
         void this.panel.webview.postMessage({
             type: 'data',
-            data: dashboardData(this.history, this.session),
+            data: this.data(),
         });
     }
 
