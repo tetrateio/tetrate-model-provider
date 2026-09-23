@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
-A richer surface for the stats and the model list. No settings changed, and no action is needed on upgrade.
+Usage visibility, a rich UI surface, and per-model control. One setting was added (`sessionAttribution`, off by default); no existing settings changed, and no action is needed on upgrade.
 
 ### Added
 
@@ -25,13 +25,6 @@ A richer surface for the stats and the model list. No settings changed, and no a
 - A `reasoningEffort` override now also sends `x-tars-supports-reasoning`, so thinking fields are not stripped toward an OpenAI-shaped backend the catalog mislabels.
 - Fields the gateway drops when translating a request across providers (`x-tars-dropped-fields`) are logged instead of vanishing silently.
 - A `model_not_ready` failure shows a one-time hint with the gateway's suggested retry delay.
-
-## 0.5.0
-
-Usage visibility and per-model control. No existing settings changed, and no action is needed on upgrade.
-
-### Added
-
 - Token usage and cost tracking. The billed token counts are requested with every streamed response and accumulated per model for the session. The status bar shows the running session cost, or the token count when no price is known, and **Show Session Usage** prints the per-model breakdown. Each completed request is also logged with its counts and cost. Costs are computed from the public catalog's prices; a request whose model has no known price is still counted and is reported as unpriced.
 - Prices in the model picker. A model with known pricing shows its input and output price per million tokens in the picker detail and in the tooltip, and reasoning models are marked in the tooltip.
 - A `modelOverrides` setting, keyed by the same glob patterns as `modelFilter`. `contextWindow` and `maxOutputTokens` replace catalog values, which gives real budgets to models the public catalog does not describe. `temperature` and `reasoningEffort` are sent with every request to matching models and take precedence over a calling extension's `modelOptions`.

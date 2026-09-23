@@ -44,11 +44,11 @@ code --install-extension tetrate.tetrate-model-provider
 
 ### Option 2: Install from a local VSIX
 
-1. Download [tetrate-model-provider-0.4.0.vsix](https://github.com/tetrateio/tetrate-model-provider/releases/download/v0.4.0/tetrate-model-provider-0.4.0.vsix) from the [Github repo](https://github.com/tetrateio/tetrate-model-provider).
+1. Download [tetrate-model-provider-0.5.0.vsix](https://github.com/tetrateio/tetrate-model-provider/releases/download/v0.5.0/tetrate-model-provider-0.5.0.vsix) from the [Github repo](https://github.com/tetrateio/tetrate-model-provider).
 1. Install from command line using `code`:
 
 ```bash
-code --install-extension tetrate-model-provider-0.4.0.vsix
+code --install-extension tetrate-model-provider-0.5.0.vsix
 ```
 
 Alternatively, open the Extensions view, choose **Install from VSIX…** from the `⋯` menu, and select the file.
