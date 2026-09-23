@@ -12,6 +12,7 @@ import {
     fetchApiModels,
     fetchPublicCatalogModels,
     formatPrice,
+    gatewayPricingOf,
     isChatModel,
     MAX_CATALOG_PAGES,
     MIN_INPUT_TOKENS,
@@ -214,6 +215,65 @@ describe('toChatInformation', () => {
         expect(info.maxInputTokens).toBe(
             1_000_000 - FALLBACK_MAX_OUTPUT_TOKENS
         );
+    });
+});
+
+describe('enriched /v1/models entries', () => {
+    const enriched: ApiModel = {
+        id: 'claude-opus-5',
+        input_price: '0.000002',
+        cached_price: '0.0000002',
+        output_price: '0.00001',
+        context_window: 900_000,
+        max_output_tokens: 64_000,
+        supports_vision: true,
+        supports_reasoning: true,
+    };
+
+    it('converts per-token gateway prices to per-million', () => {
+        expect(gatewayPricingOf(enriched)).toEqual({
+            inputPer1M: expect.closeTo(2, 6) as number,
+            outputPer1M: expect.closeTo(10, 6) as number,
+            cachedPer1M: expect.closeTo(0.2, 6) as number,
+        });
+        expect(gatewayPricingOf({ id: 'plain' })).toBeUndefined();
+        expect(
+            gatewayPricingOf({ id: 'half', input_price: '0.000002' })
+        ).toBeUndefined();
+    });
+
+    it('prefers the gateway entry over the catalog, and overrides over both', () => {
+        const info = toChatInformation(enriched, opus);
+
+        // Gateway budgets (900K/64K) beat the catalog's (1M/128K).
+        expect(info.maxOutputTokens).toBe(64_000);
+        expect(info.maxInputTokens).toBe(900_000 - 64_000);
+        expect(info.detail).toContain('$2/$10 per 1M');
+
+        const overridden = toChatInformation(enriched, opus, {
+            contextWindow: 500_000,
+        });
+        expect(overridden.maxInputTokens).toBe(500_000 - 64_000);
+    });
+
+    it('gives an uncatalogued model real budgets and prices from the gateway', () => {
+        const info = toChatInformation(enriched, undefined);
+
+        expect(info.maxInputTokens).toBe(900_000 - 64_000);
+        expect(info.capabilities.imageInput).toBe(true);
+        expect(info.tooltip).toContain('Reasoning model.');
+        expect(info.tooltip).toContain('Input $2, output $10');
+    });
+
+    it('lets a per-key vision flag veto the catalog in both directions', () => {
+        const visionByCatalog = toChatInformation(
+            { id: 'claude-opus-5', supports_vision: false },
+            opus
+        );
+        expect(visionByCatalog.capabilities.imageInput).toBe(false);
+
+        const noFlag = toChatInformation({ id: 'claude-opus-5' }, opus);
+        expect(noFlag.capabilities.imageInput).toBe(true);
     });
 });
 

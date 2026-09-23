@@ -49,6 +49,8 @@ function makeProvider(overrides: Partial<TreeDeps> = {}) {
             ]),
         catalogInfo: () => ({ fetchedAt: Date.now(), entries: 210 }),
         latencyOf: () => undefined,
+        gatewayStatus: () => Promise.resolve({ reachable: true }),
+        providerReport: () => Promise.resolve(undefined),
         session: new UsageTracker(),
         history: new UsageHistory(makeStore()),
         ...overrides,
@@ -89,12 +91,83 @@ describe('AgentRouterTreeProvider', () => {
         expect(items[0]?.command?.command).toBe(
             'tetrate-model-provider.switchEndpoint'
         );
+        expect(items[1]?.label).toBe('Gateway');
+        expect(items[1]?.description).toBe('reachable (no status document)');
         expect(items[1]?.command?.command).toBe(
+            'tetrate-model-provider.showStatus'
+        );
+        expect(items[2]?.command?.command).toBe(
             'tetrate-model-provider.setApiKey'
         );
-        expect(items[2]?.description).toContain('210 entries');
-        expect(items[3]?.label).toBe('Profiles');
-        expect(items[3]?.contextValue).toBe('profiles');
+        expect(items[3]?.description).toContain('210 entries');
+        expect(items[4]?.label).toBe('Providers');
+        expect(items[5]?.label).toBe('Profiles');
+        expect(items[5]?.contextValue).toBe('profiles');
+    });
+
+    it('marks a gateway that reports not serving', async () => {
+        const tree = makeProvider({
+            gatewayStatus: () =>
+                Promise.resolve({
+                    reachable: true,
+                    status: 'not_serving',
+                    message: 'upgrade in progress',
+                }),
+        });
+        const children = await tree.getChildren({
+            kind: 'root',
+            id: 'endpoint',
+        });
+        const gateway = tree.getTreeItem(children[1]!);
+        expect(gateway.description).toBe(
+            'NOT SERVING — upgrade in progress'
+        );
+        expect((gateway.iconPath as vscode.ThemeIcon).id).toBe('error');
+    });
+
+    it('lists per-provider health beneath the Providers row', async () => {
+        const tree = makeProvider({
+            providerReport: () =>
+                Promise.resolve({
+                    providers: [
+                        {
+                            name: 'anthropic',
+                            reachable: true,
+                            observedRequests: 12,
+                            failures: 0,
+                        },
+                        {
+                            name: 'openai',
+                            reachable: false,
+                            observedRequests: 3,
+                            failures: 3,
+                            lastFailureCode: '529',
+                        },
+                        {
+                            name: 'mistral',
+                            reachable: null,
+                            observedRequests: 0,
+                            failures: 0,
+                        },
+                    ],
+                }),
+        });
+        const children = await tree.getChildren({ kind: 'providerHealth' });
+        const items = children.map((node) => tree.getTreeItem(node));
+
+        expect(items[0]?.description).toBe('healthy · 12 request(s) observed');
+        expect((items[0]?.iconPath as vscode.ThemeIcon).id).toBe('check');
+        expect(items[1]?.description).toContain('failing (529)');
+        expect((items[1]?.iconPath as vscode.ThemeIcon).id).toBe('error');
+        expect(items[2]?.description).toBe('no traffic observed');
+    });
+
+    it('says so when the gateway serves no provider report', async () => {
+        const tree = makeProvider();
+        const [child] = await tree.getChildren({ kind: 'providerHealth' });
+        expect(tree.getTreeItem(child!).description).toContain(
+            'does not serve /v1/status'
+        );
     });
 
     it('names the profile when the base URL matches one', async () => {

@@ -2,6 +2,12 @@ import * as vscode from 'vscode';
 
 import { CONFIG_SECTION, getConfig, isIncludedByFilter } from './config';
 import { formatAge } from './diagnostics';
+import {
+    describeGateway,
+    describeProvider,
+    type GatewayStatus,
+    type ProviderReport,
+} from './health';
 import { formatContext } from './modelPicker';
 import { formatCost, type UsageTracker } from './usage';
 import type { UsageHistory } from './usageHistory';
@@ -25,6 +31,7 @@ export type TreeNode =
       }
     | { kind: 'profiles' }
     | { kind: 'profile'; name: string; url: string }
+    | { kind: 'providerHealth' }
     // `allIncluded` is computed while listing, because getTreeItem is
     // synchronous and cannot await the model list to derive it there.
     | { kind: 'family'; name: string; allIncluded: boolean }
@@ -44,9 +51,24 @@ export type TreeDeps = {
     latencyOf(
         modelId: string
     ): { medianMs: number; samples: number } | undefined;
+    /** The unauthenticated gateway status document; expected to be memoized. */
+    gatewayStatus(): Promise<GatewayStatus>;
+    /** Per-provider health from /v1/status; undefined when not served. */
+    providerReport(): Promise<ProviderReport | undefined>;
     session: UsageTracker;
     history: UsageHistory;
 };
+
+/** The tree icon for the gateway row; mirrors describeGateway's states. */
+function gatewayIcon(status: GatewayStatus): string {
+    if (!status.reachable || status.status === 'not_serving') {
+        return 'error';
+    }
+    if (status.status === 'unknown') {
+        return 'warning';
+    }
+    return 'check';
+}
 
 export class AgentRouterTreeProvider
     implements vscode.TreeDataProvider<TreeNode>, vscode.Disposable
@@ -88,6 +110,9 @@ export class AgentRouterTreeProvider
         if (node.kind === 'profiles') {
             return this.profileChildren();
         }
+        if (node.kind === 'providerHealth') {
+            return this.providerChildren();
+        }
         if (node.kind === 'family') {
             const models = await this.deps.listAllModels();
             return models
@@ -120,6 +145,15 @@ export class AgentRouterTreeProvider
                 vscode.TreeItemCollapsibleState.Collapsed
             );
             item.contextValue = 'profiles';
+            return item;
+        }
+        if (node.kind === 'providerHealth') {
+            const item = new vscode.TreeItem(
+                'Providers',
+                vscode.TreeItemCollapsibleState.Collapsed
+            );
+            item.tooltip =
+                'Per-provider health over the gateway’s recent observation window.';
             return item;
         }
         if (node.kind === 'profile') {
@@ -248,12 +282,13 @@ export class AgentRouterTreeProvider
         return 'applied';
     }
 
-    private endpointChildren(): TreeNode[] {
+    private async endpointChildren(): Promise<TreeNode[]> {
         const config = getConfig();
         const profile = Object.entries(config.profiles).find(
             ([, url]) => url === config.baseUrl
         )?.[0];
         const catalog = this.deps.catalogInfo();
+        const gateway = await this.deps.gatewayStatus();
         return [
             {
                 kind: 'leaf',
@@ -262,6 +297,15 @@ export class AgentRouterTreeProvider
                 tooltip: 'Click to switch endpoints.',
                 icon: 'globe',
                 command: 'tetrate-model-provider.switchEndpoint',
+            },
+            {
+                kind: 'leaf',
+                label: 'Gateway',
+                description: describeGateway(gateway),
+                tooltip:
+                    'The gateway’s own health, independent of the API key. Click for the full report.',
+                icon: gatewayIcon(gateway),
+                command: 'tetrate-model-provider.showStatus',
             },
             {
                 kind: 'leaf',
@@ -281,8 +325,35 @@ export class AgentRouterTreeProvider
                 icon: 'database',
                 command: 'tetrate-model-provider.refreshModels',
             },
+            { kind: 'providerHealth' },
             { kind: 'profiles' },
         ];
+    }
+
+    private async providerChildren(): Promise<TreeNode[]> {
+        const report = await this.deps.providerReport();
+        if (!report || report.providers.length === 0) {
+            return [
+                {
+                    kind: 'leaf',
+                    label: 'No provider report',
+                    description: 'this gateway does not serve /v1/status',
+                    icon: 'circle-outline',
+                },
+            ];
+        }
+        return report.providers.map((provider) => ({
+            kind: 'leaf',
+            label: provider.name,
+            description: describeProvider(provider),
+            icon:
+                provider.reachable === true
+                    ? 'check'
+                    : provider.reachable === false
+                      ? 'error'
+                      : 'circle-outline',
+            command: 'tetrate-model-provider.showStatus',
+        }));
     }
 
     private profileChildren(): TreeNode[] {

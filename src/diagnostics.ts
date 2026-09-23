@@ -1,4 +1,10 @@
 import type { ProviderConfig } from './config';
+import {
+    describeGateway,
+    describeProvider,
+    type GatewayStatus,
+    type ProviderReport,
+} from './health';
 
 /**
  * The connection status report behind the Show Connection Status command. It
@@ -16,6 +22,10 @@ export type StatusInput = {
     /** Absent when no key is stored; the probe would only report a 401. */
     probeModels: ModelProbe | undefined;
     catalog: { fetchedAt: number; entries: number } | undefined;
+    /** The unauthenticated gateway status document, when it was fetched. */
+    gateway?: GatewayStatus;
+    /** Per-provider health from /v1/status, when the gateway serves it. */
+    providerReport?: ProviderReport;
     now?: number;
 };
 
@@ -58,9 +68,30 @@ export async function buildStatusReport(
         ([, url]) => url === config.baseUrl
     )?.[0];
 
+    // A gateway that reports itself down reframes every other line: the
+    // docs' triage order is gateway first, then key, then request.
+    if (input.gateway) {
+        if (!input.gateway.reachable) {
+            healthy = false;
+            summary = `The gateway at ${config.baseUrl} is unreachable from this machine.`;
+        } else if (input.gateway.status === 'not_serving') {
+            healthy = false;
+            summary = `The gateway reports it is not serving. This is not a problem with the API key.`;
+        }
+    }
+
     const lines = [
         `Extension version: ${input.version}`,
         `Base URL: ${config.baseUrl}${profile ? ` (profile: ${profile})` : ''}`,
+        ...(input.gateway
+            ? [`Gateway: ${describeGateway(input.gateway)}`]
+            : []),
+        ...(input.providerReport
+            ? input.providerReport.providers.map(
+                  (provider) =>
+                      `Provider ${provider.name}: ${describeProvider(provider, now)}`
+              )
+            : []),
         `API key: ${keyStored ? 'stored in secret storage' : 'not stored'}`,
         `Models endpoint: ${modelsLine}`,
         `Public catalog: ${

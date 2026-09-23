@@ -17,6 +17,12 @@ import {
     VENDOR,
 } from './config';
 import { buildStatusReport } from './diagnostics';
+import {
+    fetchGatewayStatus,
+    fetchProviderReport,
+    type GatewayStatus,
+    type ProviderReport,
+} from './health';
 import { pickModels } from './modelPicker';
 import { probeCompletion } from './onboarding';
 import {
@@ -174,10 +180,60 @@ export function activate(context: vscode.ExtensionContext) {
         return models;
     };
 
+    // Health lookups are memoized briefly: the tree re-renders on every
+    // usage event, and hammering the status endpoints on each would turn a
+    // health display into load.
+    const HEALTH_MEMO_MS = 30_000;
+    let gatewayMemo:
+        | { key: string; at: number; value: Promise<GatewayStatus> }
+        | undefined;
+    const gatewayStatus = () => {
+        const key = getConfig().baseUrl;
+        if (
+            !gatewayMemo ||
+            gatewayMemo.key !== key ||
+            Date.now() - gatewayMemo.at > HEALTH_MEMO_MS
+        ) {
+            gatewayMemo = { key, at: Date.now(), value: fetchGatewayStatus(key) };
+        }
+        return gatewayMemo.value;
+    };
+    let providerMemo:
+        | { key: string; at: number; value: Promise<ProviderReport | undefined> }
+        | undefined;
+    const providerReport = () => {
+        const key = getConfig().baseUrl;
+        if (
+            !providerMemo ||
+            providerMemo.key !== key ||
+            Date.now() - providerMemo.at > HEALTH_MEMO_MS
+        ) {
+            providerMemo = {
+                key,
+                at: Date.now(),
+                value: (async () => {
+                    const config = getConfig();
+                    const apiKey = await getApiKey(context, config.baseUrl);
+                    if (!apiKey) {
+                        return undefined;
+                    }
+                    return fetchProviderReport(
+                        config.baseUrl,
+                        apiKey,
+                        config.requestHeaders
+                    );
+                })(),
+            };
+        }
+        return providerMemo.value;
+    };
+
     const tree = new AgentRouterTreeProvider({
         hasKey: async (baseUrl) =>
             Boolean(await getApiKey(context, baseUrl)),
         listAllModels,
+        gatewayStatus,
+        providerReport,
         catalogInfo: () => {
             const cached = peekPublicCatalog(context.globalState);
             return cached
@@ -264,6 +320,9 @@ export function activate(context: vscode.ExtensionContext) {
                     : {}),
                 ...(event.meta?.finishReason
                     ? { finishReason: event.meta.finishReason }
+                    : {}),
+                ...(event.meta?.requestId
+                    ? { requestId: event.meta.requestId }
                     : {}),
             });
             void history
@@ -636,8 +695,10 @@ export function activate(context: vscode.ExtensionContext) {
                         location: vscode.ProgressLocation.Notification,
                         title: 'Checking the Agent Router connection…',
                     },
-                    () =>
+                    async () =>
                         buildStatusReport({
+                            gateway: await gatewayStatus(),
+                            providerReport: await providerReport(),
                             version: String(
                                 context.extension.packageJSON.version
                             ),

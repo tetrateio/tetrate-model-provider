@@ -7,12 +7,31 @@ import {
     type ProviderConfig,
 } from './config';
 
-/** One entry of `GET {baseUrl}/models`, which is OpenAI-shaped. */
+/**
+ * One entry of `GET {baseUrl}/models`. The route is OpenAI-shaped, and the
+ * Agent Router extends each entry with pricing, budgets, and capability
+ * flags — per key, so they beat the org-wide public catalog where present.
+ * A plain OpenAI-compatible gateway omits them all, which degrades to the
+ * catalog join exactly as before.
+ *
+ * The prices are decimal strings PER TOKEN, unlike the catalog's per-million
+ * figures; {@link gatewayPricingOf} converts.
+ */
 export type ApiModel = {
     id: string;
     object?: string;
     owned_by?: string;
     created?: number;
+    input_price?: string | number;
+    cached_price?: string | number;
+    caching_price?: string | number;
+    output_price?: string | number;
+    context_window?: number;
+    max_output_tokens?: number;
+    supports_caching?: boolean;
+    supports_vision?: boolean;
+    supports_computer_use?: boolean;
+    supports_reasoning?: boolean;
 };
 
 /**
@@ -288,6 +307,30 @@ export function pricingOf(
     };
 }
 
+/**
+ * Pricing from the enriched `/v1/models` entry, converted from the route's
+ * per-token decimal strings to the per-million unit everything else uses.
+ * Both directions are required, like {@link pricingOf}, and for the same
+ * reason.
+ */
+export function gatewayPricingOf(
+    apiModel: ApiModel
+): ModelPricing | undefined {
+    const inputPerToken = parsePrice(apiModel.input_price);
+    const outputPerToken = parsePrice(apiModel.output_price);
+    if (inputPerToken === undefined || outputPerToken === undefined) {
+        return undefined;
+    }
+    const cachedPerToken = parsePrice(apiModel.cached_price);
+    return {
+        inputPer1M: inputPerToken * 1_000_000,
+        outputPer1M: outputPerToken * 1_000_000,
+        ...(cachedPerToken !== undefined
+            ? { cachedPer1M: cachedPerToken * 1_000_000 }
+            : {}),
+    };
+}
+
 /** `$2`, `$0.25`, `$0.075`: dollars per million tokens without noise digits. */
 export function formatPrice(perMillion: number): string {
     return `$${Number(perMillion.toFixed(4))}`;
@@ -298,14 +341,19 @@ export function toChatInformation(
     catalogModel: CatalogModel | undefined,
     override: ModelOverride = {}
 ): vscode.LanguageModelChatInformation {
-    // A user override outranks the catalog: it exists for models the catalog
-    // does not describe, or describes wrongly for a given deployment.
+    // A user override outranks everything; the gateway's own entry outranks
+    // the public catalog because it is per key and per deployment, while the
+    // catalog describes the hosted service in general.
     const declaredOutput = clampPositive(
-        override.maxOutputTokens ?? catalogModel?.limits?.max_output_tokens,
+        override.maxOutputTokens ??
+            apiModel.max_output_tokens ??
+            catalogModel?.limits?.max_output_tokens,
         FALLBACK_MAX_OUTPUT_TOKENS
     );
     const contextWindow = clampPositive(
-        override.contextWindow ?? catalogModel?.contextWindow,
+        override.contextWindow ??
+            apiModel.context_window ??
+            catalogModel?.contextWindow,
         FALLBACK_CONTEXT_WINDOW
     );
 
@@ -339,7 +387,7 @@ export function toChatInformation(
 
     // Cost is the axis the Agent Router routes on, so the picker shows it
     // where the models are compared instead of leaving it on the dashboard.
-    const pricing = pricingOf(catalogModel);
+    const pricing = gatewayPricingOf(apiModel) ?? pricingOf(catalogModel);
     const priceLabel = pricing
         ? `${formatPrice(pricing.inputPer1M)}/${formatPrice(pricing.outputPer1M)} per 1M`
         : undefined;
@@ -349,6 +397,8 @@ export function toChatInformation(
         ...(priceLabel ? [priceLabel] : []),
     ].join(' · ');
 
+    const reasoning =
+        apiModel.supports_reasoning ?? capabilities.includes('reasoning');
     const tooltip = [
         catalogModel?.metadata?.description ??
             `${apiModel.id} via Tetrate Agent Router Service`,
@@ -357,7 +407,7 @@ export function toChatInformation(
                   `Input ${formatPrice(pricing.inputPer1M)}, output ${formatPrice(pricing.outputPer1M)} per million tokens.`,
               ]
             : []),
-        ...(capabilities.includes('reasoning') ? ['Reasoning model.'] : []),
+        ...(reasoning ? ['Reasoning model.'] : []),
     ].join('\n');
 
     return {
@@ -377,9 +427,12 @@ export function toChatInformation(
                 capabilities.includes('tool_choice') ||
                 capabilities.includes('function_calling') ||
                 capabilities.length === 0,
+            // The gateway flag is per key and authoritative when present, in
+            // either direction; the catalog fills in for other gateways.
             imageInput:
-                capabilities.includes('vision') ||
-                inputModalities.includes('image'),
+                apiModel.supports_vision ??
+                (capabilities.includes('vision') ||
+                    inputModalities.includes('image')),
         },
     };
 }

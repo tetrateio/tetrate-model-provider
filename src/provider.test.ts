@@ -402,6 +402,94 @@ describe('provideLanguageModelChatResponse', () => {
         );
     });
 
+    it('sends a unique X-Request-ID for Request Logs correlation', async () => {
+        const h = harness({ steps: [finish('stop')] });
+
+        await h.run();
+        await h.run();
+
+        const ids = h.requests.map(
+            (request) => request.headers?.['X-Request-ID']
+        );
+        expect(ids[0]).toMatch(
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+        );
+        expect(ids[0]).not.toBe(ids[1]);
+    });
+
+    it('tells a budget-blocked 429 apart from a rate limit', async () => {
+        const blocked = harness({
+            rejectWith: new OpenAI.APIError(
+                429,
+                { message: 'budget exhausted' },
+                'budget exhausted',
+                new Headers({ 'x-tars-budget-action': 'block' })
+            ),
+        });
+        const budgetError = await rejection(blocked.run());
+        expect((budgetError as Error).message).toContain('spend budget');
+        expect((budgetError as Error).message).toContain(
+            'retrying will not help'
+        );
+
+        const limited = harness({
+            rejectWith: new OpenAI.APIError(
+                429,
+                { message: 'slow down' },
+                'slow down',
+                new Headers()
+            ),
+        });
+        const rateError = await rejection(limited.run());
+        expect((rateError as Error).message).toContain('Rate limited');
+    });
+
+    it('explains each model lifecycle code', async () => {
+        const h = harness({
+            rejectWith: new OpenAI.APIError(
+                503,
+                { message: 'not ready', code: 'model_not_ready' },
+                'not ready',
+                new Headers({ 'retry-after': '30' })
+            ),
+        });
+        const error = await rejection(h.run());
+        expect((error as Error).message).toContain('not active yet');
+        expect((error as Error).message).toContain('retry in 30s');
+
+        const notRouted = harness({
+            rejectWith: new OpenAI.APIError(
+                404,
+                { message: 'no route', code: 'model_not_routed' },
+                'no route',
+                new Headers()
+            ),
+        });
+        const routeError = await rejection(notRouted.run());
+        expect((routeError as Error).message).toContain('model grants');
+    });
+
+    it('offers the right hostnames on a project mismatch 403', async () => {
+        const h = harness({
+            rejectWith: new OpenAI.APIError(
+                403,
+                {
+                    message: 'wrong host',
+                    category: 'hostname_not_selected',
+                    your_hostnames: ['proxy.acme.tetrate.ai'],
+                },
+                'wrong host',
+                new Headers()
+            ),
+        });
+
+        const error = await rejection(h.run());
+        expect(error).toBeInstanceOf(vscode.LanguageModelError);
+        expect(error).toMatchObject({ code: 'NoPermissions' });
+        expect((error as Error).message).toContain('proxy.acme.tetrate.ai');
+        expect((error as Error).message).toContain('Switch Endpoint');
+    });
+
     it('forwards modelOptions without letting them override the request shape', async () => {
         const h = harness({ steps: [finish('stop')] });
 
@@ -719,7 +807,11 @@ type Behaviour =
     | { steps: Step[]; onAbort?: 'throw' | 'end' }
     | { rejectWith: unknown };
 
-type Request = { body: Record<string, unknown>; signal: AbortSignal };
+type Request = {
+    body: Record<string, unknown>;
+    signal: AbortSignal;
+    headers?: Record<string, string>;
+};
 
 function abortError(): Error {
     const error = new Error('The operation was aborted.');
@@ -785,8 +877,15 @@ async function* scriptedStream(
 function fakeClient(behaviour: Behaviour) {
     const requests: Request[] = [];
     const create = vi.fn(
-        (body: Record<string, unknown>, options: { signal: AbortSignal }) => {
-            requests.push({ body, signal: options.signal });
+        (
+            body: Record<string, unknown>,
+            options: { signal: AbortSignal; headers?: Record<string, string> }
+        ) => {
+            requests.push({
+                body,
+                signal: options.signal,
+                headers: options.headers,
+            });
             if ('rejectWith' in behaviour) {
                 return Promise.reject(behaviour.rejectWith);
             }

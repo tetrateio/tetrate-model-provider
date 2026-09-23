@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 import {
     type CatalogModel,
     fetchApiModels,
+    gatewayPricingOf,
     type ModelPricing,
     pricingOf,
     RequestTimeoutError,
@@ -210,7 +211,16 @@ export class TetrateChatModelProvider
             ]);
 
             const models = selectChatModels(apiModels, catalog, config);
+            // Gateway-reported prices are per key and win over the public
+            // catalog; the catalog still prices models on gateways that do
+            // not enrich their /models entries.
             this.pricingById = indexPricing(catalog.values());
+            for (const apiModel of apiModels) {
+                const pricing = gatewayPricingOf(apiModel);
+                if (pricing) {
+                    this.pricingById.set(apiModel.id.toLowerCase(), pricing);
+                }
+            }
             this.log.info(
                 `Discovered ${models.length} chat model(s) at ${config.baseUrl}`
             );
@@ -249,6 +259,7 @@ export class TetrateChatModelProvider
             );
         }
 
+        const requestId = crypto.randomUUID();
         const chatMessages = convertMessages(messages, {
             toolResultImages: model.capabilities?.imageInput === true,
         });
@@ -317,7 +328,13 @@ export class TetrateChatModelProvider
                           }
                         : {}),
                 },
-                { signal: controller.signal }
+                {
+                    signal: controller.signal,
+                    // Echoed back as x-client-request-id and indexed by the
+                    // service's Request Logs, so one id correlates the local
+                    // record with the server-side one.
+                    headers: { 'X-Request-ID': requestId },
+                }
             );
 
             const toolCalls = new ToolCallAccumulator(`call_${this.turn++}`);
@@ -406,7 +423,8 @@ export class TetrateChatModelProvider
                     firstOutputAt,
                     finishedAt: Date.now(),
                 },
-                finishReason
+                finishReason,
+                requestId
             );
         } catch (error) {
             if (stalled) {
@@ -486,11 +504,12 @@ export class TetrateChatModelProvider
         modelId: string,
         usage: OpenAI.Completions.CompletionUsage | undefined,
         timing: RequestTiming,
-        finishReason: string | undefined
+        finishReason: string | undefined,
+        requestId: string
     ): void {
         if (!usage) {
             this.log.info(
-                `${modelId}: completed (${describeTiming(timing)}); no usage block received`
+                `${modelId}: completed (${describeTiming(timing)}); no usage block received · ${requestId}`
             );
             return;
         }
@@ -512,6 +531,7 @@ export class TetrateChatModelProvider
                         ? timing.firstOutputAt - timing.startedAt
                         : undefined,
                 finishReason,
+                requestId,
             }
         );
 
@@ -526,7 +546,7 @@ export class TetrateChatModelProvider
         this.log.info(
             `${modelId}: ${formatTokens(request.inputTokens)} in${cached} + ${formatTokens(request.outputTokens)} out${reasoning}${
                 cost !== undefined ? ` ≈ ${formatCost(cost)}` : ''
-            } (${describeTiming(timing)})`
+            } (${describeTiming(timing)}) · ${requestId}`
         );
     }
 
@@ -813,7 +833,54 @@ function describe(error: unknown): string {
     }
     if (error instanceof OpenAI.APIError) {
         const status = error.status ? `HTTP ${error.status}` : 'request failed';
-        return `${status}: ${error.message}`;
+        const advice = adviceFor(error);
+        return `${status}: ${error.message}${advice ? ` — ${advice}` : ''}`;
     }
     return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Turns the gateway's documented error signals into the sentence that names
+ * the fix. The signals are precise — a budget block and a rate limit share
+ * status 429 and are told apart only by a header, and four distinct `code`
+ * values describe where in its lifecycle a missing model is — so without
+ * this, every one of them reads as the same opaque failure.
+ */
+export function adviceFor(
+    error: InstanceType<typeof OpenAI.APIError>
+): string | undefined {
+    const body = (error.error ?? {}) as {
+        code?: string;
+        category?: string;
+        your_hostnames?: string[];
+    };
+
+    if (error.status === 429) {
+        // The gateway marks a budget stop explicitly; a plain 429 is a rate
+        // limit and worth retrying, which a budget stop never is.
+        return error.headers?.get?.('x-tars-budget-action') === 'block'
+            ? 'A spend budget blocked this request; this is not a rate limit, and retrying will not help until the budget resets.'
+            : 'Rate limited; retry shortly.';
+    }
+
+    if (error.status === 403 && body.category === 'hostname_not_selected') {
+        const hosts = (body.your_hostnames ?? []).join(', ');
+        return `This API key belongs to a different gateway host${hosts ? ` (${hosts})` : ''}. Run "Tetrate Agent Router: Switch Endpoint".`;
+    }
+
+    const code = error.code ?? body.code;
+    switch (code) {
+        case 'model_not_found':
+            return 'The model is not in the catalog for this key, or is disabled.';
+        case 'model_not_available':
+            return 'The model is enabled but still propagating to the gateway; retry in a moment.';
+        case 'model_not_ready': {
+            const after = error.headers?.get?.('retry-after');
+            return `The model's route is provisioned but not active yet; retry${after ? ` in ${after}s` : ' shortly'}.`;
+        }
+        case 'model_not_routed':
+            return "The model is enabled but has no route on this gateway; check the project's model grants.";
+        default:
+            return undefined;
+    }
 }

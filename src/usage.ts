@@ -61,6 +61,8 @@ export type RequestMeta = {
     /** Absent when the stream ended without producing output. */
     firstOutputMs?: number;
     finishReason?: string;
+    /** The X-Request-ID sent with the request; the Request Logs search key. */
+    requestId?: string;
 };
 
 /** What subscribers receive for each completed request. */

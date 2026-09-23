@@ -74,6 +74,66 @@ describe('buildStatusReport', () => {
         expect(report.lines[5]).toBe('Model filter: 1 pattern');
     });
 
+    it('reports the gateway status and per-provider health when supplied', async () => {
+        const report = await buildStatusReport({
+            ...base,
+            gateway: { reachable: true, status: 'serving', dataPlane: 'dp-1' },
+            providerReport: {
+                providers: [
+                    {
+                        name: 'anthropic',
+                        reachable: true,
+                        observedRequests: 12,
+                        failures: 0,
+                    },
+                    {
+                        name: 'openai',
+                        reachable: false,
+                        observedRequests: 3,
+                        failures: 3,
+                        lastFailureCode: '529',
+                    },
+                ],
+            },
+        });
+
+        expect(report.healthy).toBe(true);
+        expect(report.lines).toContain('Gateway: serving (dp-1)');
+        expect(report.lines).toContain(
+            'Provider anthropic: healthy · 12 request(s) observed'
+        );
+        expect(
+            report.lines.some((line) =>
+                line.startsWith('Provider openai: failing (529)')
+            )
+        ).toBe(true);
+    });
+
+    it('lets a not-serving gateway override an otherwise healthy report', async () => {
+        const report = await buildStatusReport({
+            ...base,
+            gateway: {
+                reachable: true,
+                status: 'not_serving',
+                message: 'upgrade in progress',
+            },
+        });
+
+        expect(report.healthy).toBe(false);
+        expect(report.summary).toContain('not serving');
+        expect(report.summary).toContain('not a problem with the API key');
+    });
+
+    it('reports an unreachable gateway as the headline', async () => {
+        const report = await buildStatusReport({
+            ...base,
+            gateway: { reachable: false, message: 'ENOTFOUND' },
+        });
+
+        expect(report.healthy).toBe(false);
+        expect(report.summary).toContain('unreachable');
+    });
+
     it('reports a missing catalog cache as such', async () => {
         const report = await buildStatusReport({ ...base, catalog: undefined });
         expect(report.lines[4]).toBe('Public catalog: not cached yet');

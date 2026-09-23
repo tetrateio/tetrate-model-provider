@@ -51,6 +51,9 @@ export class RequestsTreeProvider
             ...(record.finishReason
                 ? [`Finish reason: ${record.finishReason}`]
                 : []),
+            // The service's Request Logs are searchable by this id, so it is
+            // the bridge from a local row to the server-side record.
+            ...(record.requestId ? [`Request id: ${record.requestId}`] : []),
         ].join('\n');
         item.iconPath = new vscode.ThemeIcon(iconFor(record.finishReason));
         item.contextValue = 'request';

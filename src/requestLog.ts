@@ -29,6 +29,8 @@ export type RequestRecord = {
     firstOutputMs?: number;
     /** The finish_reason of the last chunk that carried one. */
     finishReason?: string;
+    /** The X-Request-ID sent with the request; finds it in Request Logs. */
+    requestId?: string;
 };
 
 export class RequestLog {

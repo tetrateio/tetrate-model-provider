@@ -13,6 +13,10 @@ A richer surface for the stats and the model list. No settings changed, and no a
 - A `@tetrate` chat participant. `/usage` reports today's and the session's figures in the chat view, `/models` finds offered models by capability, price, or name (`@tetrate /models vision under $1`), and `/switch` changes to a named endpoint profile.
 - A **Test Connection** command that sends a one-token completion to the first offered model and reports the round trip, so a fresh setup is confirmed end to end rather than only by listing models.
 - **Add Endpoint Profile** and **Remove Endpoint Profile** commands, so profiles no longer require hand-editing a settings object. The Overview view lists them with the current one marked.
+- Model metadata is now read from the gateway's own enriched `/v1/models` entries where present: per-key prices, context window, output limit, and vision and reasoning flags. A user override still outranks everything, and the public catalog fills in for gateways that serve plain OpenAI-shaped entries. The gateway's prices arrive per token and are converted to the per-million unit used everywhere else.
+- Gateway health in the Overview view and the status report. The unauthenticated status document at the gateway root distinguishes an outage from a key problem in its own words, and `/v1/status` reports per-provider health with failure codes and ages, shown beneath a new Providers row. The hosted service serves no status document at its root; that reads as "reachable", not as an error.
+- Actionable request errors. A budget-blocked request is distinguished from a rate limit by the gateway's own header and says that retrying will not help; the four model lifecycle codes (`model_not_found`, `model_not_available`, `model_not_ready`, `model_not_routed`) each name their fix; a project-mismatch 403 lists the hostnames the key does belong to and points at **Switch Endpoint**.
+- Every request now carries an `X-Request-ID`, logged with the completion line and kept on the Recent Requests row, so a local request can be found in the service's Request Logs by the same id.
 
 ## 0.5.0
 
