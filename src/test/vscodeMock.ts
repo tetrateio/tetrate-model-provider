@@ -39,6 +39,10 @@ export class LanguageModelToolResultPart {
     ) {}
 }
 
+export class LanguageModelPromptTsxPart {
+    constructor(public value: unknown) {}
+}
+
 export class LanguageModelDataPart {
     constructor(
         public data: Uint8Array,

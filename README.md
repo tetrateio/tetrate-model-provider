@@ -44,11 +44,11 @@ code --install-extension tetrate.tetrate-model-provider
 
 ### Option 2: Install from a local VSIX
 
-1. Download [tetrate-model-provider-0.2.0.vsix](https://github.com/tetrateio/tetrate-model-provider/releases/download/v0.2.0/tetrate-model-provider-0.2.0.vsix) from the [Github repo](https://github.com/tetrateio/tetrate-model-provider).
+1. Download [tetrate-model-provider-0.4.0.vsix](https://github.com/tetrateio/tetrate-model-provider/releases/download/v0.4.0/tetrate-model-provider-0.4.0.vsix) from the [Github repo](https://github.com/tetrateio/tetrate-model-provider).
 1. Install from command line using `code`:
 
 ```bash
-code --install-extension tetrate-model-provider-0.2.0.vsix
+code --install-extension tetrate-model-provider-0.4.0.vsix
 ```
 
 Alternatively, open the Extensions view, choose **Install from VSIX…** from the `⋯` menu, and select the file.
@@ -243,7 +243,7 @@ await model.sendRequest(messages, {
 Discovery runs when VS Code asks for the model list, not at activation, so an unconfigured extension costs nothing at startup.
 
 1. `GET {baseUrl}/models` with `Authorization: Bearer <key>` returns the ids the key can reach. This is the authoritative list.
-2. `GET https://router.tetrate.ai/api/public/models?limit=500` returns metadata for the public catalog: display names, context windows, output limits, and capabilities.
+2. `GET https://router.tetrate.ai/api/public/models?limit=500` returns metadata for the public catalog: display names, context windows, output limits, and capabilities. When the catalog spans more than one page, the remaining pages are fetched as well.
 3. The two are joined by model id, non-conversational models are dropped, `modelFilter` is applied, and the result is sorted by display name.
 
 The result is cached against the base URL and filter. Changing the key, the base URL, or the filter clears the cache and fires `onDidChangeLanguageModelChatInformation`, prompting VS Code to re-query.
@@ -263,7 +263,7 @@ Models absent from the catalog fall back to conservative values:
 | Tool calling | Assumed supported | An uncatalogued model is more likely capable than not. |
 | Image input | Assumed unsupported | Sending an image to a text-only model is a hard error. |
 
-Context window and output limit are reported separately to VS Code, so the output budget is subtracted from the context window to give `maxInputTokens`.
+Context window and output limit are reported separately to VS Code, so the output budget is subtracted from the context window to give `maxInputTokens`. The amount reserved for output is capped at half the window. A few catalog entries advertise an output cap as large as their whole context window, and reserving all of it would leave no room for the prompt. The output figure is informational in any case, since no token cap is sent with the request.
 
 ### Which models are offered
 
@@ -284,12 +284,15 @@ Other translation details:
 - Only `User` and `Assistant` roles exist in the provider API. A system prompt arrives as the first user message and is passed through as one.
 - Assistant content is flattened to text, because the OpenAI protocol has no multi-part assistant content. Images in a replayed assistant turn are dropped rather than sent in an invalid shape.
 - Images become `image_url` parts carrying a base64 data URL.
+- A tool result rendered with `@vscode/prompt-tsx`, as VS Code's built-in tools produce, is serialized to JSON text, since the model cannot consume the element tree directly.
 - An empty tool result is sent as `(no output)`, because the API rejects a `tool` message with empty content.
 - Messages with no usable content are skipped, and an assistant turn that only calls tools omits `content` rather than sending an empty string.
 
 ### Streaming and cancellation
 
-Responses stream over server-sent events. Text deltas are reported as they arrive. Tool calls are accumulated by index across chunks, since `id`, `name`, and `arguments` may each be split, and are reported once the stream completes. Unparseable tool arguments become an empty object so the tool itself can report a validation failure rather than failing the whole turn.
+Responses stream over server-sent events. Text deltas are reported as they arrive. Tool calls are accumulated by index across chunks, since `arguments` arrive as string fragments, and are reported once the stream completes. Arguments that do not parse as a JSON object become an empty object so the tool itself can report a validation failure rather than failing the whole turn.
+
+Two timeouts guard the stream. A response that produces no output for three minutes is reported as an error; the allowance is long because reasoning models stream nothing while they think. Once output has started, a gap of sixty seconds between chunks is reported as a stall. Both surface in the chat view and in the output channel.
 
 Cancelling a request aborts the underlying HTTP request. An aborted request completes quietly instead of surfacing an error.
 
@@ -310,10 +313,10 @@ Image cost is a flat estimate, since real cost scales with resolution and comput
 ## Behaviour and limitations
 
 - **Output length.** No token cap is sent, so each model's server-side default applies. Sending `max_tokens` unconditionally risks rejection on models that require `max_completion_tokens` instead. Set either through `modelOptions`.
-- **Images** are sent only for models reporting vision support. Audio and PDF inputs are not forwarded, because the chat-completions content model this endpoint exposes has no place for them.
+- **Images.** VS Code offers image attachments only for models that report vision support. The provider forwards every image part it receives as a base64 data URL and does not check the capability itself. Audio and PDF inputs are not forwarded, because the chat-completions content model this endpoint exposes has no place for them.
 - **Reasoning traces** are not surfaced. The provider response part types have no thinking part in the supported VS Code versions.
 - **Prompt caching** is not configured explicitly. Where the upstream provider applies it automatically, it still takes effect.
-- **Retries** follow the OpenAI SDK default of two attempts on transient failures.
+- **Retries** follow the OpenAI SDK default of two retries on transient failures, for three attempts in total. A retry happens only before the stream opens, so a partially delivered answer is never re-requested.
 - **Rate limits and errors** propagate as-is. A 401 or 403 becomes a `LanguageModelError.NoPermissions`, a 404 becomes `NotFound`, and everything else surfaces with the status and the server's message.
 
 ## Troubleshooting
@@ -326,6 +329,8 @@ Image cost is a flat estimate, since real cost scales with resolution and comput
 | A 401 on every request | The key is invalid or revoked. Set a fresh one from the dashboard. |
 | A 404 on every request | The base URL is wrong. It must end in `/v1` or another version segment. |
 | Fallback limits on every model | `router.tetrate.ai` is unreachable, so catalog metadata is unavailable. Discovery still works. |
+| "produced no output for 180s" | The model sent nothing for three minutes. A reasoning model on a very long prompt can take this long; lower `reasoning_effort` through `modelOptions`, shorten the prompt, or pick a faster model. |
+| "stalled for 60s with no data" | The stream stopped mid-answer. Usually a gateway or network interruption; retry the request. |
 | Stale icon or old behaviour after reinstall | Quit VS Code fully and reopen. Window reload does not clear the icon cache. |
 | Claude models appear twice | Another Claude provider extension is installed. Both contribute under separate vendors. |
 

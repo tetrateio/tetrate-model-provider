@@ -52,7 +52,7 @@ Press <kbd>F5</kbd> to launch an extension-host window. The **Tetrate Agent Rout
 
 ## Releasing
 
-A release is a tag push. `.github/workflows/release.yml` typechecks, lints, tests, checks the tag against `package.json`, packages the VSIX, publishes it to the Marketplace, and attaches it to the GitHub release.
+A release is a tag push. `.github/workflows/release.yml` typechecks, lints, tests, checks the tag against `package.json`, packages the VSIX, attaches it to the GitHub release, and then publishes it to the Marketplace. The GitHub release comes first so that a Marketplace authentication failure still leaves a downloadable VSIX behind.
 
 ```bash
 npm version minor --no-git-tag-version   # major, minor or patch

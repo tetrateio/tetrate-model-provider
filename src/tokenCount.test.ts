@@ -98,4 +98,22 @@ describe('countTokens', () => {
 
         expect(countTokens(message)).toBeGreaterThan(TOKENS_PER_MESSAGE);
     });
+
+    it('counts a prompt-tsx tool result by its JSON form', () => {
+        const value = { node: 'x', children: ['hello'] };
+        const message = {
+            role: vscode.LanguageModelChatMessageRole.User,
+            content: [
+                new vscode.LanguageModelToolResultPart('call-1', [
+                    new vscode.LanguageModelPromptTsxPart(value),
+                ]),
+            ],
+            name: undefined,
+        } as vscode.LanguageModelChatRequestMessage;
+
+        expect(countTokens(message)).toBeGreaterThan(TOKENS_PER_MESSAGE);
+        expect(countTokens(message)).toBe(
+            TOKENS_PER_MESSAGE + estimateTextTokens(JSON.stringify(value))
+        );
+    });
 });

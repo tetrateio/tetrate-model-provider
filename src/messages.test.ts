@@ -107,6 +107,44 @@ describe('convertMessages', () => {
         ]);
     });
 
+    it('serializes a prompt-tsx tool result as JSON text', () => {
+        const value = { node: 'x', children: ['hello'] };
+        const result = convertMessages([
+            user(
+                new vscode.LanguageModelToolResultPart('call-1', [
+                    new vscode.LanguageModelPromptTsxPart(value),
+                ])
+            ),
+        ]);
+
+        expect(result).toEqual([
+            {
+                role: 'tool',
+                tool_call_id: 'call-1',
+                content: JSON.stringify(value),
+            },
+        ]);
+    });
+
+    it('joins text and prompt-tsx tool result parts in order', () => {
+        const value = { node: 'x', children: ['hello'] };
+        const result = convertMessages([
+            user(
+                new vscode.LanguageModelToolResultPart('call-1', [
+                    new vscode.LanguageModelTextPart('before'),
+                    new vscode.LanguageModelPromptTsxPart(value),
+                    new vscode.LanguageModelTextPart('after'),
+                ])
+            ),
+        ]);
+
+        expect(result[0]).toEqual({
+            role: 'tool',
+            tool_call_id: 'call-1',
+            content: ['before', JSON.stringify(value), 'after'].join('\n'),
+        });
+    });
+
     it('encodes an image part as a data URL', () => {
         const result = convertMessages([
             user(

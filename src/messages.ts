@@ -105,6 +105,11 @@ function flattenToolResult(parts: ReadonlyArray<unknown>): string {
             } else {
                 chunks.push(decodeText(part.data));
             }
+        } else if (part instanceof vscode.LanguageModelPromptTsxPart) {
+            // VS Code's built-in tools return rendered prompt-tsx trees. The
+            // model cannot consume the tree directly, but its JSON form still
+            // carries the text inside it, which beats dropping the result.
+            chunks.push(safeStringify(part.value));
         } else if (typeof part === 'string') {
             chunks.push(part);
         }
@@ -170,4 +175,12 @@ export function convertToolMode(
 
 function decodeText(data: Uint8Array): string {
     return new TextDecoder().decode(data);
+}
+
+function safeStringify(value: unknown): string {
+    try {
+        return JSON.stringify(value ?? {}) ?? '';
+    } catch {
+        return '';
+    }
 }

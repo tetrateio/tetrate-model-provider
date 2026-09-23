@@ -32,6 +32,13 @@ export const PUBLIC_CATALOG_URL =
     'https://router.tetrate.ai/api/public/models';
 
 /**
+ * Bounds how many catalog pages one refresh will follow. The live catalog fits
+ * in a single page of 500 today, so this only bites if `totalPages` ever comes
+ * back runaway or malicious.
+ */
+export const MAX_CATALOG_PAGES = 10;
+
+/**
  * Used when the catalog has nothing to say about a model — deliberately modest,
  * because an overstated context window turns into a mid-conversation API error
  * while an understated one only costs some unused headroom.
@@ -138,39 +145,74 @@ export async function fetchApiModels(
  * self-hosted deployment may not be represented in it at all, so every failure
  * here degrades to fallback numbers instead of breaking model discovery.
  *
- * Returns undefined — rather than an empty list — when the fetch did not
+ * The endpoint paginates. The first page reports `totalPages`; any further
+ * pages (up to {@link MAX_CATALOG_PAGES}) are fetched in parallel and joined
+ * in page order, so growth past the server's page size does not silently drop
+ * the tail of the catalog.
+ *
+ * Returns undefined, rather than an empty list, when the fetch did not
  * succeed, so a caller holding a stale copy can tell "the catalog is empty"
- * from "we could not reach the catalog" and keep serving what it has.
+ * from "we could not reach the catalog" and keep serving what it has. Any one
+ * page failing fails the whole call for the same reason: a partial catalog
+ * would replace a complete stale copy with a worse one.
  */
 export async function fetchPublicCatalogModels(
     token?: vscode.CancellationToken
 ): Promise<CatalogModel[] | undefined> {
     try {
-        const url = `${PUBLIC_CATALOG_URL}?limit=500`;
-        const response = await request(
-            url,
-            {},
-            {
-                timeoutMs: CATALOG_TIMEOUT_MS,
-                attempts: CATALOG_ATTEMPTS,
-                token,
-            }
+        const first = await fetchCatalogPage(1, token);
+        const lastPage = Math.min(
+            clampPositive(first.totalPages, 1),
+            MAX_CATALOG_PAGES
         );
-        if (!response.ok) {
-            return undefined;
-        }
-        const body = await readJson<{ models?: CatalogModel[] }>(
-            response,
-            url
+        const rest = await Promise.all(
+            Array.from({ length: Math.max(0, lastPage - 1) }, (_, i) =>
+                fetchCatalogPage(i + 2, token)
+            )
         );
-        return (body.models ?? []).filter(
-            (model): model is CatalogModel => typeof model?.model === 'string'
-        );
+        return [first, ...rest]
+            .flatMap((page) => page.models ?? [])
+            .filter(
+                (model): model is CatalogModel =>
+                    typeof model?.model === 'string'
+            );
     } catch {
         // Discovery must still work offline or behind a proxy that blocks this
         // host; the caller falls back to a stale copy or to the defaults.
         return undefined;
     }
+}
+
+type CatalogPage = {
+    models?: CatalogModel[];
+    totalPages?: number;
+};
+
+/**
+ * One page of the catalog. A non-2xx status throws rather than returning an
+ * empty page, so it surfaces through `Promise.all` the same way a network
+ * error or a timeout does.
+ */
+async function fetchCatalogPage(
+    page: number,
+    token?: vscode.CancellationToken
+): Promise<CatalogPage> {
+    const url = `${PUBLIC_CATALOG_URL}?limit=500${page > 1 ? `&page=${page}` : ''}`;
+    const response = await request(
+        url,
+        {},
+        {
+            timeoutMs: CATALOG_TIMEOUT_MS,
+            attempts: CATALOG_ATTEMPTS,
+            token,
+        }
+    );
+    if (!response.ok) {
+        throw new Error(
+            `Agent Router returned ${response.status} ${response.statusText} for GET ${url}`
+        );
+    }
+    return readJson<CatalogPage>(response, url);
 }
 
 /** Convenience wrapper that fetches and indexes in one step. */
@@ -207,16 +249,24 @@ export function toChatInformation(
     );
 
     // VS Code budgets input separately from output, but the API charges both
-    // against one context window, so reserve the output half up front.
+    // against one context window, so the output figure is reserved up front.
+    // The reservation is capped at half the window. The provider never sends
+    // `max_tokens`, so the catalog's output cap is informational and
+    // over-reserving it buys nothing, while a model that reports an output cap
+    // as large as its context (gpt-4, the gpt-oss line) would otherwise be
+    // left with a prompt budget too small to hold a single chat turn.
+    const reservedOutput = Math.min(
+        declaredOutput,
+        Math.floor(contextWindow / 2)
+    );
     const maxInputTokens = Math.max(
         MIN_INPUT_TOKENS,
-        contextWindow -
-            Math.min(declaredOutput, contextWindow - MIN_INPUT_TOKENS)
+        contextWindow - reservedOutput
     );
 
-    // The floor above can push the pair past the window on a model that
-    // advertises an output cap as large as its context. Output yields, since
-    // an over-reserved prompt budget is what produces a hard API error.
+    // The floor above can still push the pair past the window on a context
+    // smaller than twice the floor. Output yields, since an over-reserved
+    // prompt budget is what produces a hard API error.
     const maxOutputTokens = Math.max(
         MIN_OUTPUT_TOKENS,
         Math.min(declaredOutput, contextWindow - maxInputTokens)

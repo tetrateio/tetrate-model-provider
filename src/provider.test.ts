@@ -1,6 +1,22 @@
-import { describe, expect, it } from 'vitest';
+import OpenAI from 'openai';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as vscode from 'vscode';
 
-import { parseArguments, ToolCallAccumulator } from './provider';
+import {
+    FIRST_OUTPUT_TIMEOUT_MS,
+    parseArguments,
+    STREAM_IDLE_TIMEOUT_MS,
+    TetrateChatModelProvider,
+    ToolCallAccumulator,
+} from './provider';
+
+type Chunk = OpenAI.Chat.Completions.ChatCompletionChunk;
+type Delta = OpenAI.Chat.Completions.ChatCompletionChunk.Choice.Delta;
+type FinishReason =
+    OpenAI.Chat.Completions.ChatCompletionChunk.Choice['finish_reason'];
+type ToolCallDelta =
+    OpenAI.Chat.Completions.ChatCompletionChunk.Choice.Delta.ToolCall;
+type ResponseOptions = vscode.ProvideLanguageModelChatResponseOptions;
 
 describe('ToolCallAccumulator', () => {
     it('reassembles a call split across chunks', () => {
@@ -9,16 +25,33 @@ describe('ToolCallAccumulator', () => {
             {
                 index: 0,
                 id: 'call-1',
-                function: { name: 'read_', arguments: '{"pa' },
+                function: { name: 'read_file', arguments: '{"pa' },
             },
         ]);
-        accumulator.add([
-            { index: 0, function: { name: 'file', arguments: 'th":"a.ts"}' } },
-        ]);
+        accumulator.add([{ index: 0, function: { arguments: 'th":"a.ts"}' } }]);
 
         expect(accumulator.finish()).toEqual([
             { id: 'call-1', name: 'read_file', input: { path: 'a.ts' } },
         ]);
+    });
+
+    it('does not duplicate a name a gateway repeats on every chunk', () => {
+        const accumulator = new ToolCallAccumulator();
+        accumulator.add([
+            {
+                index: 0,
+                id: 'call-1',
+                function: { name: 'read_file', arguments: '{"pa' },
+            },
+        ]);
+        accumulator.add([
+            {
+                index: 0,
+                function: { name: 'read_file', arguments: 'th":"a.ts"}' },
+            },
+        ]);
+
+        expect(accumulator.finish()[0]?.name).toBe('read_file');
     });
 
     it('keeps parallel calls apart and orders them by index', () => {
@@ -67,6 +100,17 @@ describe('ToolCallAccumulator', () => {
         expect(call?.malformedArguments).toBe('{"pa');
     });
 
+    it('treats array arguments as malformed', () => {
+        const accumulator = new ToolCallAccumulator();
+        accumulator.add([
+            { index: 0, id: 'a', function: { name: 'read', arguments: '[1,2]' } },
+        ]);
+
+        const [call] = accumulator.finish();
+        expect(call?.input).toEqual({});
+        expect(call?.malformedArguments).toBe('[1,2]');
+    });
+
     it('leaves malformedArguments unset for a clean parse', () => {
         const accumulator = new ToolCallAccumulator();
         accumulator.add([
@@ -96,5 +140,553 @@ describe('parseArguments', () => {
         expect(parseArguments('{"a":')).toEqual({});
         expect(parseArguments('null')).toEqual({});
         expect(parseArguments('42')).toEqual({});
+        expect(parseArguments('[1,2]')).toEqual({});
     });
 });
+
+describe('provideLanguageModelChatResponse', () => {
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it('throws NoPermissions without calling the client when no key is stored', async () => {
+        const h = harness({ steps: [] }, { storedKey: undefined });
+
+        const error = await rejection(h.run());
+
+        expect(error).toBeInstanceOf(vscode.LanguageModelError);
+        expect(error).toMatchObject({ code: 'NoPermissions' });
+        expect(h.create).not.toHaveBeenCalled();
+    });
+
+    it('returns without calling the client when nothing converts to a message', async () => {
+        const h = harness({ steps: [] });
+
+        await h.run({}, [user('')]);
+
+        expect(h.create).not.toHaveBeenCalled();
+        expect(h.log.warn).toHaveBeenCalledWith(
+            expect.stringContaining('no convertible content')
+        );
+    });
+
+    it('reports text deltas in order', async () => {
+        const h = harness({
+            steps: [text('Hel'), text('lo'), finish('stop')],
+        });
+
+        await h.run();
+
+        expect(h.parts.every((part) => part instanceof vscode.LanguageModelTextPart)).toBe(true);
+        expect(texts(h.parts)).toEqual(['Hel', 'lo']);
+    });
+
+    it('reports a tool call once the stream ends', async () => {
+        const h = harness({
+            steps: [
+                toolCall({
+                    index: 0,
+                    id: 'call_abc',
+                    function: { name: 'read_file', arguments: '{"pa' },
+                }),
+                toolCall({ index: 0, function: { arguments: 'th":"a.ts"}' } }),
+                finish('tool_calls'),
+            ],
+        });
+
+        await h.run();
+
+        expect(h.parts).toHaveLength(1);
+        expect(h.parts[0]).toBeInstanceOf(vscode.LanguageModelToolCallPart);
+        expect(h.parts[0]).toMatchObject({
+            callId: 'call_abc',
+            name: 'read_file',
+            input: { path: 'a.ts' },
+        });
+    });
+
+    it('synthesizes a tool call id when the gateway omits one', async () => {
+        const h = harness({
+            steps: [
+                toolCall({
+                    index: 0,
+                    function: { name: 'now', arguments: '{}' },
+                }),
+                finish('tool_calls'),
+            ],
+        });
+
+        await h.run();
+
+        expect(h.parts[0]).toMatchObject({ callId: 'call_0_0', name: 'now' });
+    });
+
+    it('appends a truncation note when the output limit was hit', async () => {
+        const h = harness({ steps: [text('partial'), finish('length')] });
+
+        await h.run();
+
+        expect(texts(h.parts)).toEqual([
+            'partial',
+            expect.stringContaining('Truncated'),
+        ]);
+        expect(h.log.warn).toHaveBeenCalledWith(
+            expect.stringContaining('output limit')
+        );
+    });
+
+    it('throws Blocked when a content filter stopped the response before any output', async () => {
+        const h = harness({ steps: [finish('content_filter')] });
+
+        const error = await rejection(h.run());
+
+        expect(error).toBeInstanceOf(vscode.LanguageModelError);
+        expect(error).toMatchObject({ code: 'Blocked' });
+        expect(h.parts).toEqual([]);
+    });
+
+    it('appends a note instead when a content filter interrupted output', async () => {
+        const h = harness({
+            steps: [text('some'), finish('content_filter')],
+        });
+
+        await h.run();
+
+        expect(texts(h.parts)).toEqual([
+            'some',
+            expect.stringContaining('Stopped early'),
+        ]);
+    });
+
+    it.each([
+        [401, 'NoPermissions'],
+        [404, 'NotFound'],
+    ])('maps an APIError with status %i to %s', async (status, code) => {
+        const h = harness({
+            rejectWith: new OpenAI.APIError(
+                status,
+                { message: 'nope' },
+                'nope',
+                new Headers()
+            ),
+        });
+
+        const error = await rejection(h.run());
+
+        expect(error).toBeInstanceOf(vscode.LanguageModelError);
+        expect(error).toMatchObject({ code });
+    });
+
+    it('surfaces other HTTP failures as a plain Error naming the status', async () => {
+        const h = harness({
+            rejectWith: new OpenAI.APIError(
+                500,
+                { message: 'upstream exploded' },
+                'upstream exploded',
+                new Headers()
+            ),
+        });
+
+        const error = await rejection(h.run());
+
+        expect(error).toBeInstanceOf(Error);
+        expect(error).not.toBeInstanceOf(vscode.LanguageModelError);
+        expect((error as Error).message).toContain('HTTP 500');
+        expect(h.log.error).toHaveBeenCalledWith(
+            expect.stringContaining('HTTP 500')
+        );
+    });
+
+    it('surfaces a chunk-level error the SDK raised mid-stream', async () => {
+        // The SDK turns a chunk carrying `error` into an APIError with no
+        // status; the provider relies on that rather than checking chunks.
+        const h = harness({
+            steps: [
+                text('partial'),
+                {
+                    fail: new OpenAI.APIError(
+                        undefined,
+                        { message: 'quota exceeded' },
+                        undefined,
+                        new Headers()
+                    ),
+                },
+            ],
+        });
+
+        const error = await rejection(h.run());
+
+        expect(texts(h.parts)).toEqual(['partial']);
+        expect((error as Error).message).toContain(
+            'request failed: quota exceeded'
+        );
+    });
+
+    it('resolves quietly when the token cancels mid-stream and aborts the request', async () => {
+        const h = harness({ steps: [text('hel'), { hang: true }] });
+
+        const pending = h.run();
+        await vi.waitFor(() => expect(h.parts).toHaveLength(1));
+        h.token.cancel();
+
+        await expect(pending).resolves.toBeUndefined();
+        expect(h.requests[0]?.signal.aborted).toBe(true);
+        expect(h.log.error).not.toHaveBeenCalled();
+    });
+
+    it('does not report an empty response when the stream ends quietly on cancellation', async () => {
+        // The installed SDK swallows the abort its iterator sees, so the loop
+        // ends as if the answer were complete.
+        const h = harness({
+            steps: [roleOnly(), { hang: true }],
+            onAbort: 'end',
+        });
+
+        const pending = h.run();
+        await vi.waitFor(() => expect(h.requests).toHaveLength(1));
+        await flush();
+        h.token.cancel();
+
+        await expect(pending).resolves.toBeUndefined();
+        expect(h.log.warn).not.toHaveBeenCalled();
+    });
+
+    it('allows a reasoning model the first-output allowance before calling a stall', async () => {
+        vi.useFakeTimers();
+        const h = harness({ steps: [roleOnly(), { hang: true }] });
+
+        const pending = h.run();
+        const state = settlement(pending);
+
+        await vi.advanceTimersByTimeAsync(STREAM_IDLE_TIMEOUT_MS + 1000);
+        expect(state()).toBe('pending');
+
+        await vi.advanceTimersByTimeAsync(FIRST_OUTPUT_TIMEOUT_MS);
+        await expect(pending).rejects.toThrow(/no output/);
+        expect(h.requests[0]?.signal.aborted).toBe(true);
+        expect(h.log.error).toHaveBeenCalledWith(
+            expect.stringContaining('no output')
+        );
+    });
+
+    it('reports a stall once output has started and the stream goes silent', async () => {
+        vi.useFakeTimers();
+        const h = harness({ steps: [text('hi'), { hang: true }] });
+
+        const pending = h.run();
+        const state = settlement(pending);
+
+        await vi.advanceTimersByTimeAsync(STREAM_IDLE_TIMEOUT_MS + 1000);
+
+        expect(state()).toBe('rejected');
+        await expect(pending).rejects.toThrow(/stalled/);
+        expect(h.requests[0]?.signal.aborted).toBe(true);
+    });
+
+    it('reports a stall even when the SDK ends the stream quietly on abort', async () => {
+        vi.useFakeTimers();
+        const h = harness({
+            steps: [text('hi'), { hang: true }],
+            onAbort: 'end',
+        });
+
+        const pending = h.run();
+        settlement(pending);
+
+        await vi.advanceTimersByTimeAsync(STREAM_IDLE_TIMEOUT_MS + 1000);
+
+        await expect(pending).rejects.toThrow(/stalled/);
+        expect(h.log.error).toHaveBeenCalledWith(
+            expect.stringContaining('stalled')
+        );
+    });
+
+    it('forwards modelOptions without letting them override the request shape', async () => {
+        const h = harness({ steps: [finish('stop')] });
+
+        await h.run({
+            modelOptions: { temperature: 0.2, model: 'evil', stream: false },
+        });
+
+        expect(h.requests[0]?.body).toMatchObject({
+            temperature: 0.2,
+            model: MODEL.id,
+            stream: true,
+        });
+    });
+
+    it.each([
+        [vscode.LanguageModelChatToolMode.Auto, 'auto'],
+        [vscode.LanguageModelChatToolMode.Required, 'required'],
+    ])('sends tools with tool_choice for mode %i', async (toolMode, choice) => {
+        const h = harness({ steps: [finish('stop')] });
+
+        await h.run({
+            toolMode,
+            tools: [
+                {
+                    name: 'read_file',
+                    description: 'Reads a file',
+                    inputSchema: { type: 'object', properties: {} },
+                },
+            ],
+        });
+
+        const body = h.requests[0]?.body;
+        expect(body?.tool_choice).toBe(choice);
+        expect(body?.tools).toEqual([
+            {
+                type: 'function',
+                function: {
+                    name: 'read_file',
+                    description: 'Reads a file',
+                    parameters: { type: 'object', properties: {} },
+                },
+            },
+        ]);
+    });
+
+    it('omits tools and tool_choice when no tools are offered', async () => {
+        const h = harness({ steps: [finish('stop')] });
+
+        await h.run({ tools: [] });
+
+        expect(h.requests[0]?.body).not.toHaveProperty('tools');
+        expect(h.requests[0]?.body).not.toHaveProperty('tool_choice');
+    });
+});
+
+const MODEL: vscode.LanguageModelChatInformation = {
+    id: 'claude-test',
+    name: 'Claude Test',
+    family: 'claude',
+    version: '1',
+    maxInputTokens: 100_000,
+    maxOutputTokens: 4_096,
+    capabilities: { toolCalling: true },
+};
+
+function user(content: string): vscode.LanguageModelChatRequestMessage {
+    return {
+        role: vscode.LanguageModelChatMessageRole.User,
+        content: [new vscode.LanguageModelTextPart(content)],
+        name: undefined,
+    };
+}
+
+function chunk(delta: Delta, finishReason: FinishReason = null): Chunk {
+    return {
+        id: 'chunk',
+        object: 'chat.completion.chunk',
+        created: 0,
+        model: MODEL.id,
+        choices: [{ index: 0, delta, finish_reason: finishReason }],
+    };
+}
+
+const roleOnly = () => chunk({ role: 'assistant' });
+const text = (content: string) => chunk({ content });
+const finish = (reason: FinishReason) => chunk({}, reason);
+const toolCall = (call: ToolCallDelta) => chunk({ tool_calls: [call] });
+
+function texts(parts: readonly vscode.LanguageModelResponsePart[]): string[] {
+    return parts
+        .filter(
+            (part): part is vscode.LanguageModelTextPart =>
+                part instanceof vscode.LanguageModelTextPart
+        )
+        .map((part) => part.value);
+}
+
+/** A chunk to yield, a timed pause, a failure to raise, or a hang until abort. */
+type Step = Chunk | { wait: number } | { fail: unknown } | { hang: true };
+
+type Behaviour =
+    | { steps: Step[]; onAbort?: 'throw' | 'end' }
+    | { rejectWith: unknown };
+
+type Request = { body: Record<string, unknown>; signal: AbortSignal };
+
+function abortError(): Error {
+    const error = new Error('The operation was aborted.');
+    error.name = 'AbortError';
+    return error;
+}
+
+/** Resolves with `work`, or rejects with an AbortError as soon as the signal fires. */
+function untilAborted(signal: AbortSignal, work: Promise<void>): Promise<void> {
+    return new Promise((resolve, reject) => {
+        const abort = () => reject(abortError());
+        if (signal.aborted) {
+            abort();
+            return;
+        }
+        signal.addEventListener('abort', abort, { once: true });
+        void work.then(() => {
+            signal.removeEventListener('abort', abort);
+            resolve();
+        });
+    });
+}
+
+/**
+ * Plays a script as the async iterable the SDK hands back. Pauses run on
+ * timers so fake timers can drive them; `hang` blocks until the request is
+ * aborted. On abort a pending step rejects with an AbortError, or with
+ * `onAbort: 'end'` finishes the stream quietly, which is what the installed
+ * SDK does with the abort its own iterator sees.
+ */
+async function* scriptedStream(
+    steps: Step[],
+    signal: AbortSignal,
+    onAbort: 'throw' | 'end'
+): AsyncGenerator<Chunk> {
+    try {
+        for (const step of steps) {
+            if ('hang' in step) {
+                await untilAborted(signal, new Promise<void>(() => {}));
+            } else if ('wait' in step) {
+                await untilAborted(
+                    signal,
+                    new Promise<void>((resolve) => setTimeout(resolve, step.wait))
+                );
+            } else if ('fail' in step) {
+                throw step.fail;
+            } else {
+                yield step;
+            }
+        }
+    } catch (error) {
+        if (
+            onAbort === 'end' &&
+            error instanceof Error &&
+            error.name === 'AbortError'
+        ) {
+            return;
+        }
+        throw error;
+    }
+}
+
+function fakeClient(behaviour: Behaviour) {
+    const requests: Request[] = [];
+    const create = vi.fn(
+        (body: Record<string, unknown>, options: { signal: AbortSignal }) => {
+            requests.push({ body, signal: options.signal });
+            if ('rejectWith' in behaviour) {
+                return Promise.reject(behaviour.rejectWith);
+            }
+            return Promise.resolve(
+                scriptedStream(
+                    behaviour.steps,
+                    options.signal,
+                    behaviour.onAbort ?? 'throw'
+                )
+            );
+        }
+    );
+    return {
+        client: { chat: { completions: { create } } } as unknown as OpenAI,
+        create,
+        requests,
+    };
+}
+
+function cancellationToken() {
+    const listeners = new Set<(e: unknown) => unknown>();
+    const token = {
+        isCancellationRequested: false,
+        onCancellationRequested(listener: (e: unknown) => unknown) {
+            listeners.add(listener);
+            return {
+                dispose: () => {
+                    listeners.delete(listener);
+                },
+            };
+        },
+        cancel() {
+            token.isCancellationRequested = true;
+            for (const listener of [...listeners]) {
+                listener(undefined);
+            }
+        },
+    };
+    return token;
+}
+
+type HarnessOptions = { storedKey?: string | undefined };
+
+function harness(behaviour: Behaviour, options: HarnessOptions = {}) {
+    const storedKey = 'storedKey' in options ? options.storedKey : 'sk-test';
+    const fake = fakeClient(behaviour);
+    const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const context = {
+        secrets: { get: vi.fn(() => Promise.resolve(storedKey)) },
+        globalState: {
+            get: () => undefined,
+            update: () => Promise.resolve(),
+        },
+    };
+    const provider = new TetrateChatModelProvider(
+        context as unknown as vscode.ExtensionContext,
+        log as unknown as vscode.LogOutputChannel,
+        () => fake.client
+    );
+    const parts: vscode.LanguageModelResponsePart[] = [];
+    const token = cancellationToken();
+
+    const run = (
+        overrides: Partial<ResponseOptions> = {},
+        messages: vscode.LanguageModelChatRequestMessage[] = [user('hello')]
+    ) =>
+        provider.provideLanguageModelChatResponse(
+            MODEL,
+            messages,
+            { toolMode: vscode.LanguageModelChatToolMode.Auto, ...overrides },
+            {
+                report: (part) => {
+                    parts.push(part);
+                },
+            },
+            token
+        );
+
+    return {
+        run,
+        parts,
+        log,
+        token,
+        create: fake.create,
+        requests: fake.requests,
+    };
+}
+
+async function rejection(promise: Promise<unknown>): Promise<unknown> {
+    try {
+        await promise;
+    } catch (error) {
+        return error;
+    }
+    throw new Error('expected the promise to reject');
+}
+
+/** Tracks how a promise settled without awaiting it, for fake-timer tests. */
+function settlement(
+    promise: Promise<unknown>
+): () => 'pending' | 'resolved' | 'rejected' {
+    let state: 'pending' | 'resolved' | 'rejected' = 'pending';
+    promise.then(
+        () => {
+            state = 'resolved';
+        },
+        () => {
+            state = 'rejected';
+        }
+    );
+    return () => state;
+}
+
+/** Lets queued microtasks and one macrotask run; real timers only. */
+function flush(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+}

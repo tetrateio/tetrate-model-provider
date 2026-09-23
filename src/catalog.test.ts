@@ -12,6 +12,7 @@ import {
     fetchApiModels,
     fetchPublicCatalogModels,
     isChatModel,
+    MAX_CATALOG_PAGES,
     MIN_INPUT_TOKENS,
     MODELS_ATTEMPTS,
     RequestTimeoutError,
@@ -120,11 +121,33 @@ describe('toChatInformation', () => {
             }
         );
 
-        expect(info.maxInputTokens).toBe(MIN_INPUT_TOKENS);
-        expect(info.maxOutputTokens).toBe(8192 - MIN_INPUT_TOKENS);
+        expect(info.maxInputTokens).toBe(4096);
+        expect(info.maxOutputTokens).toBe(4096);
         expect(info.maxInputTokens + info.maxOutputTokens).toBeLessThanOrEqual(
             8192
         );
+    });
+
+    it('gives a usable prompt budget when the output cap equals the window', () => {
+        // The live catalog lists gpt-4 (and the gpt-oss line) with
+        // max_output_tokens equal to contextWindow. Reserving all of it left
+        // the prompt at the input floor, which cannot hold a chat turn. The
+        // provider never sends max_tokens, so the output figure is
+        // informational and yields half the window instead.
+        const info = toChatInformation(
+            { id: 'gpt-4' },
+            {
+                model: 'gpt-4',
+                provider: 'openai',
+                mode: 'responses',
+                contextWindow: 8192,
+                limits: { max_output_tokens: 8192 },
+            }
+        );
+
+        expect(info.maxInputTokens).toBe(4096);
+        expect(info.maxOutputTokens).toBe(4096);
+        expect(info.maxInputTokens).toBeGreaterThan(MIN_INPUT_TOKENS);
     });
 
     it('prefers owned_by when the catalog has no entry', () => {
@@ -346,6 +369,65 @@ describe('network behaviour', () => {
             expect(fetchMock).toHaveBeenCalledTimes(2);
         });
 
+        it('waits out a short Retry-After before retrying', async () => {
+            const fetchMock = vi
+                .fn()
+                .mockImplementationOnce(() =>
+                    Promise.resolve(
+                        jsonResponse({}, {
+                            status: 429,
+                            statusText: 'Too Many Requests',
+                            headers: {
+                                'content-type': 'application/json',
+                                'retry-after': '2',
+                            },
+                        })
+                    )
+                )
+                .mockImplementationOnce(() =>
+                    Promise.resolve(jsonResponse({ data: [{ id: 'a' }] }))
+                );
+            vi.stubGlobal('fetch', fetchMock);
+
+            const pending = fetchApiModels('https://x/v1', 'k', {});
+
+            // The default first backoff is at most 500 ms, so a retry that is
+            // still pending at 1.5 s can only be honouring the header.
+            await vi.advanceTimersByTimeAsync(1_500);
+            expect(fetchMock).toHaveBeenCalledTimes(1);
+
+            await vi.advanceTimersByTimeAsync(700);
+            expect(fetchMock).toHaveBeenCalledTimes(2);
+            await expect(pending).resolves.toEqual([{ id: 'a' }]);
+        });
+
+        it('ignores a Retry-After past the ceiling and falls back to backoff', async () => {
+            const fetchMock = vi
+                .fn()
+                .mockImplementationOnce(() =>
+                    Promise.resolve(
+                        jsonResponse({}, {
+                            status: 429,
+                            statusText: 'Too Many Requests',
+                            headers: {
+                                'content-type': 'application/json',
+                                'retry-after': '60',
+                            },
+                        })
+                    )
+                )
+                .mockImplementationOnce(() =>
+                    Promise.resolve(jsonResponse({ data: [{ id: 'a' }] }))
+                );
+            vi.stubGlobal('fetch', fetchMock);
+
+            const pending = fetchApiModels('https://x/v1', 'k', {});
+            await vi.advanceTimersByTimeAsync(600);
+
+            expect(fetchMock).toHaveBeenCalledTimes(2);
+            await expect(pending).resolves.toEqual([{ id: 'a' }]);
+        });
+
         it('gives up after the configured attempts', async () => {
             const fetchMock = vi.fn(() =>
                 Promise.resolve(
@@ -461,6 +543,78 @@ describe('network behaviour', () => {
             await expect(fetchPublicCatalogModels()).resolves.toEqual([
                 { model: 'a' },
             ]);
+        });
+
+        it('fetches a single page when the catalog reports one or none', async () => {
+            for (const body of [
+                { models: [{ model: 'a' }], totalPages: 1 },
+                { models: [{ model: 'a' }] },
+            ]) {
+                const fetchMock = vi.fn(() =>
+                    Promise.resolve(jsonResponse(body))
+                );
+                vi.stubGlobal('fetch', fetchMock);
+
+                await expect(fetchPublicCatalogModels()).resolves.toEqual([
+                    { model: 'a' },
+                ]);
+                expect(fetchMock).toHaveBeenCalledTimes(1);
+            }
+        });
+
+        it('follows pagination and keeps the pages in order', async () => {
+            const fetchMock = vi.fn((url: string) =>
+                Promise.resolve(
+                    url.includes('page=2')
+                        ? jsonResponse({ models: [{ model: 'c' }] })
+                        : jsonResponse({
+                              models: [{ model: 'a' }, { model: 'b' }],
+                              totalPages: 2,
+                          })
+                )
+            );
+            vi.stubGlobal('fetch', fetchMock);
+
+            await expect(fetchPublicCatalogModels()).resolves.toEqual([
+                { model: 'a' },
+                { model: 'b' },
+                { model: 'c' },
+            ]);
+            expect(fetchMock).toHaveBeenCalledTimes(2);
+            const [firstUrl] = fetchMock.mock.calls[0] as unknown as [string];
+            const [secondUrl] = fetchMock.mock.calls[1] as unknown as [string];
+            expect(firstUrl).not.toContain('page=');
+            expect(secondUrl).toContain('page=2');
+        });
+
+        it('treats a failed later page as an unreachable catalog', async () => {
+            // A partial catalog must not replace a complete stale copy, so the
+            // whole call reports failure and the cache keeps what it has.
+            const fetchMock = vi.fn((url: string) =>
+                url.includes('page=2')
+                    ? Promise.reject(new Error('ECONNRESET'))
+                    : Promise.resolve(
+                          jsonResponse({
+                              models: [{ model: 'a' }],
+                              totalPages: 2,
+                          })
+                      )
+            );
+            vi.stubGlobal('fetch', fetchMock);
+
+            await expect(fetchPublicCatalogModels()).resolves.toBeUndefined();
+        });
+
+        it('caps the number of pages it will follow', async () => {
+            const fetchMock = vi.fn(() =>
+                Promise.resolve(
+                    jsonResponse({ models: [{ model: 'a' }], totalPages: 50 })
+                )
+            );
+            vi.stubGlobal('fetch', fetchMock);
+
+            await fetchPublicCatalogModels();
+            expect(fetchMock).toHaveBeenCalledTimes(MAX_CATALOG_PAGES);
         });
     });
 });

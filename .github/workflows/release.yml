@@ -53,6 +53,27 @@ jobs:
           name: vsix
           path: '*.vsix'
 
+      # This runs before the Marketplace steps on purpose. The GitHub release is
+      # the fallback install channel, and it needs nothing but the repository
+      # token, so a Marketplace authentication failure must not take it down
+      # too. That is what happened to v0.3.0: the tag and the Marketplace
+      # listing exist, but no release was created and the VSIX link in the
+      # README was dead.
+      #
+      # The release usually already exists, as a draft written by hand before
+      # the tag was pushed. Creating it again would fail, and its notes are
+      # better than --generate-notes, so only fall back to creating one when
+      # the tag arrived without a release behind it.
+      - name: Attach the VSIX to the GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" ./*.vsix --clobber
+
       # Authentication is a Microsoft Entra ID workload identity, federated to
       # this repository's OIDC token, so there is no secret to rotate. It also
       # outlives the PAT this used to carry: Azure DevOps retires global PATs
@@ -76,17 +97,3 @@ jobs:
       - name: Publish to the Visual Studio Code Marketplace
         if: startsWith(github.ref, 'refs/tags/v') && inputs.dry-run != true
         run: npx vsce publish --no-dependencies --packagePath *.vsix --azure-credential --skip-duplicate
-
-      # The release usually already exists, as a draft written by hand before
-      # the tag was pushed. Creating it again would fail, and its notes are
-      # better than --generate-notes, so only fall back to creating one when
-      # the tag arrived without a release behind it.
-      - name: Attach the VSIX to the GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" --generate-notes
-          fi
-          gh release upload "$GITHUB_REF_NAME" ./*.vsix --clobber

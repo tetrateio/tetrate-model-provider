@@ -1,4 +1,4 @@
-import OpenAI from 'openai';
+import OpenAI, { type ClientOptions } from 'openai';
 import * as vscode from 'vscode';
 
 import {
@@ -15,17 +15,29 @@ import { countTokens } from './tokenCount';
 const USER_AGENT = 'vscode-tetrate-model-provider';
 
 /**
- * Ceiling on time-to-first-token. The SDK's own default is ten minutes, which
- * is indistinguishable from a hang; this is still generous for a long prompt.
+ * Bounds the wait for response headers. The SDK clears its timer as soon as
+ * fetch resolves, which is before any body bytes arrive, so this says nothing
+ * about the first token; FIRST_OUTPUT_TIMEOUT_MS below covers that. The SDK's
+ * own default is ten minutes, which is indistinguishable from a hang.
  */
 const RESPONSE_TIMEOUT_MS = 120_000;
 
 /**
- * A stream that goes this long between chunks is treated as dead. The SDK's
- * timeout covers the initial response only, so without this a gateway that
- * stops mid-answer leaves the turn hanging until the user cancels.
+ * How long a stream may run before its first content or tool-call delta.
+ * Reasoning models over chat completions send nothing while they think, so a
+ * high-effort request on a long prompt can legitimately pass the idle limit
+ * below before the first token. Reporting that as a stall would fail exactly
+ * the answers that take the most compute to produce.
  */
-const STREAM_IDLE_TIMEOUT_MS = 60_000;
+export const FIRST_OUTPUT_TIMEOUT_MS = 180_000;
+
+/**
+ * Once output has started, a stream that goes this long between chunks is
+ * treated as dead. The SDK's timeout covers the response headers only, so
+ * without this a gateway that stops mid-answer leaves the turn hanging until
+ * the user cancels.
+ */
+export const STREAM_IDLE_TIMEOUT_MS = 60_000;
 
 /**
  * How long a model list stays usable. Bounded so a newly added upstream model
@@ -76,7 +88,11 @@ export class TetrateChatModelProvider
 
     constructor(
         private readonly context: vscode.ExtensionContext,
-        private readonly log: vscode.LogOutputChannel
+        private readonly log: vscode.LogOutputChannel,
+        /** Lets tests substitute a scripted client; production uses the SDK. */
+        private readonly createClient: (options: ClientOptions) => OpenAI = (
+            options
+        ) => new OpenAI(options)
     ) {}
 
     dispose(): void {
@@ -217,16 +233,28 @@ export class TetrateChatModelProvider
             controller.abort()
         );
 
-        let stalled = false;
+        // A stall and a user cancellation both arrive as an abort; this tells
+        // them apart. The error is built where the timer fires because only
+        // that knows which allowance ran out.
+        let stalled: Error | undefined;
         let idleTimer: ReturnType<typeof setTimeout> | undefined;
-        const armIdleTimer = () => {
+        const armIdleTimer = (phase: 'first' | 'idle') => {
             if (idleTimer) {
                 clearTimeout(idleTimer);
             }
+            const ms =
+                phase === 'first'
+                    ? FIRST_OUTPUT_TIMEOUT_MS
+                    : STREAM_IDLE_TIMEOUT_MS;
             idleTimer = setTimeout(() => {
-                stalled = true;
+                const seconds = Math.round(ms / 1000);
+                stalled = new Error(
+                    phase === 'first'
+                        ? `Agent Router: ${model.id} produced no output for ${seconds}s.`
+                        : `Agent Router: the response from ${model.id} stalled for ${seconds}s with no data.`
+                );
                 controller.abort();
-            }, STREAM_IDLE_TIMEOUT_MS);
+            }, ms);
         };
 
         try {
@@ -255,38 +283,44 @@ export class TetrateChatModelProvider
             const toolCalls = new ToolCallAccumulator(`call_${this.turn++}`);
             let finishReason: string | undefined;
             let reportedText = 0;
+            let outputStarted = false;
 
-            armIdleTimer();
+            // A chunk carrying an `error` field never reaches this loop: the
+            // SDK raises it as an APIError before yielding.
+            armIdleTimer('first');
             for await (const chunk of stream) {
-                armIdleTimer();
-
-                // Some OpenAI-compatible gateways report a mid-stream failure
-                // as a field on the chunk rather than by closing with an HTTP
-                // error, which would otherwise read as a short answer.
-                const streamError = (chunk as { error?: { message?: string } })
-                    .error;
-                if (streamError) {
-                    throw new Error(
-                        streamError.message ?? 'the gateway reported a stream error'
-                    );
-                }
-
                 const choice = chunk.choices[0];
                 if (choice?.finish_reason) {
                     finishReason = choice.finish_reason;
                 }
 
                 const delta = choice?.delta;
-                if (!delta) {
-                    continue;
-                }
-                if (delta.content) {
+                if (delta?.content) {
                     reportedText += delta.content.length;
                     progress.report(
                         new vscode.LanguageModelTextPart(delta.content)
                     );
+                    outputStarted = true;
                 }
-                toolCalls.add(delta.tool_calls);
+                if (delta?.tool_calls?.length) {
+                    toolCalls.add(delta.tool_calls);
+                    outputStarted = true;
+                }
+
+                // Armed after the chunk is handled so the allowance measures
+                // the gap to the next one. Role-only and reasoning chunks keep
+                // the longer allowance: the model has not started answering.
+                armIdleTimer(outputStarted ? 'idle' : 'first');
+            }
+
+            // The SDK's iterator returns quietly on the abort it sees
+            // mid-stream, so a stall or a cancellation ends the loop as though
+            // the answer were complete.
+            if (stalled) {
+                throw stalled;
+            }
+            if (token.isCancellationRequested) {
+                return;
             }
 
             // Arguments arrive as string fragments, so a call is only reportable
@@ -316,10 +350,8 @@ export class TetrateChatModelProvider
             );
         } catch (error) {
             if (stalled) {
-                const seconds = Math.round(STREAM_IDLE_TIMEOUT_MS / 1000);
-                const message = `Agent Router: the response from ${model.id} stalled for ${seconds}s with no data.`;
-                this.log.error(message);
-                throw new Error(message);
+                this.log.error(stalled.message);
+                throw stalled;
             }
             if (isAbort(error) || token.isCancellationRequested) {
                 return;
@@ -420,7 +452,7 @@ export class TetrateChatModelProvider
     private client(config: ProviderConfig, apiKey: string): OpenAI {
         // Cheap to construct, and the base URL or key may have changed since the
         // last request, so this is not cached.
-        return new OpenAI({
+        return this.createClient({
             apiKey,
             baseURL: config.baseUrl,
             timeout: RESPONSE_TIMEOUT_MS,
@@ -465,8 +497,8 @@ type StreamedToolCall = {
 
 /**
  * Reassembles tool calls from streaming deltas. The protocol identifies a call
- * by its position in the array, and `id`, `name` and `arguments` may each be
- * split across chunks.
+ * by its position in the array; `arguments` arrives as fragments to be joined,
+ * while `id` and `name` are sent whole.
  */
 export class ToolCallAccumulator {
     private readonly byIndex = new Map<
@@ -496,7 +528,11 @@ export class ToolCallAccumulator {
                 entry.id = delta.id;
             }
             if (delta.function?.name) {
-                entry.name += delta.function.name;
+                // OpenAI sends the name whole in the first delta, and the
+                // SDK's own accumulator assigns it rather than appending. Some
+                // compatible gateways repeat the full name on every chunk,
+                // which appending would turn into `read_fileread_file`.
+                entry.name = delta.function.name;
             }
             if (delta.function?.arguments) {
                 entry.args += delta.function.arguments;
@@ -544,7 +580,13 @@ function parseToolArguments(args: string): ParsedArguments {
     }
     try {
         const parsed: unknown = JSON.parse(trimmed);
-        if (parsed !== null && typeof parsed === 'object') {
+        // An array parses, but the tool would receive a shape its schema
+        // never declared; only an object is a valid argument set.
+        if (
+            parsed !== null &&
+            typeof parsed === 'object' &&
+            !Array.isArray(parsed)
+        ) {
             return { input: parsed };
         }
         return { input: {}, malformed: trimmed };

@@ -45,6 +45,8 @@ export function countContentTokens(parts: ReadonlyArray<unknown>): number {
             tokens += part.mimeType.startsWith('image/')
                 ? TOKENS_PER_IMAGE
                 : estimateBinaryTokens(part.data);
+        } else if (part instanceof vscode.LanguageModelPromptTsxPart) {
+            tokens += estimateTextTokens(safeStringify(part.value));
         } else if (typeof part === 'string') {
             tokens += estimateTextTokens(part);
         }

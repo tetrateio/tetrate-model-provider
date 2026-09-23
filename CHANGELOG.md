@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.0
+
+Correctness fixes to model budgets and streaming, and unit tests for the streaming path. No settings changed, and no action is needed on upgrade.
+
+### Fixed
+
+- Models whose catalog entry advertises an output cap as large as their context window, such as `gpt-4` and the `gpt-oss` family, were offered with a prompt budget of 1,024 tokens and were unusable from chat. The output reservation is now capped at half the window, so `gpt-4` reports 4,096 input and 4,096 output tokens and `gpt-oss-120b` reports 65,536 of each. No other model's budgets change.
+- A response that produced no output for sixty seconds was reported as stalled. Reasoning models stream nothing while they think, and a high-effort request on a long prompt can take longer than that. The first output now has a three-minute allowance, and the sixty-second rule applies only between chunks once output has started.
+- A stall or a cancellation that arrived mid-stream was not reported at all. The OpenAI SDK ends its stream iterator quietly when the request is aborted after the first chunk, so the turn finished as though the truncated answer were complete, and any tool calls collected so far were still dispatched. Both cases are now checked after the stream ends: a stall raises an error and a cancellation returns without reporting anything further.
+- Tool results rendered with `@vscode/prompt-tsx`, which VS Code's built-in tools produce, were sent upstream as `(no output)` and counted as zero tokens. They are now serialized to JSON text and counted accordingly.
+- A gateway that repeats the full tool name on every streamed chunk produced names such as `read_fileread_file`. The name is now taken from the latest chunk, matching the OpenAI SDK's own accumulator; arguments are still concatenated.
+- Tool arguments that parse as a JSON array were accepted as valid input. They now take the same path as unparseable arguments: an empty object, with the offending text logged.
+- The public catalog was read one page at a time and only the first page was used. Additional pages are now fetched when the catalog reports more than one.
+
+### Release process
+
+- The GitHub release and its VSIX are now created before the Marketplace publish step, so a Marketplace authentication failure no longer leaves the tag without a downloadable package. This is what left v0.3.0 without a GitHub release.
+- The README's local VSIX link points at the current release.
+
 ## 0.3.0
 
 A reliability and speed pass over model discovery and streaming. No settings changed, and no action is needed on upgrade.
@@ -7,7 +26,7 @@ A reliability and speed pass over model discovery and streaming. No settings cha
 ### Reliability
 
 - Both requests behind model discovery now have a deadline. A host that accepted the connection and then went quiet — a stalled proxy, a captive portal — previously left the model picker spinning indefinitely, because neither `fetch` nor VS Code imposes a limit of its own.
-- `GET /v1/models` retries a transient failure — 408, 425, 429, 5xx, or a dropped connection — up to three times with exponential backoff, honouring a short `Retry-After`. A single rate-limit response no longer empties the model list. An authentication failure is still reported on the first attempt.
+- `GET /v1/models` makes up to three attempts on a transient failure (408, 425, 429, 5xx, or a dropped connection) with exponential backoff, honouring a short `Retry-After`. A single rate-limit response no longer empties the model list. An authentication failure is still reported on the first attempt.
 - A response that stalls for 60 seconds mid-stream is reported as a stall, rather than hanging until the request is cancelled.
 - A truncated or filtered answer is no longer indistinguishable from a complete one. Reaching the output token limit appends a note and logs the limit; a content filter that blocks a request raises an error instead of returning nothing.
 - Failures that a gateway reports as a field on a stream chunk, rather than by closing the connection, are raised instead of read as a short answer.
