@@ -83,6 +83,7 @@ Secret storage is per-machine and does not sync across Settings Sync.
 | --- | --- | --- | --- | --- |
 | `tetrate-model-provider.baseUrl` | string | `https://api.router.tetrate.ai/v1` | machine | The OpenAI-compatible endpoint to call. |
 | `tetrate-model-provider.modelFilter` | string[] | `[]` | window | Glob patterns limiting which models are offered. Empty offers every chat model. |
+| `tetrate-model-provider.modelOverrides` | object | `{}` | window | Per-model budgets and request defaults, keyed by glob pattern. |
 | `tetrate-model-provider.requestHeaders` | object | `{}` | machine | Extra HTTP headers sent with every request. |
 
 `baseUrl` and `requestHeaders` are machine-scoped, so they can be set in User settings but not in a workspace or folder `settings.json`. Both decide where the API key is sent, and a cloned repository must not be able to point it somewhere else. `modelFilter` only narrows the picker, so it stays settable per workspace.
@@ -135,6 +136,40 @@ Use `requestHeaders` for a routing hint or a tenant identifier required by a sel
 
 Do not put the API key here. It belongs in secret storage, and settings files are frequently committed to source control. An `Authorization` entry is discarded: that header is always derived from the stored key.
 
+### Per-model overrides
+
+`modelOverrides` tunes individual models. Entries are keyed by the same `*` glob patterns as `modelFilter`; when several patterns match one model, later entries win field by field.
+
+```jsonc
+{
+    "tetrate-model-provider.modelOverrides": {
+        "claude-*": { "reasoningEffort": "high" },
+        "in-house-llama": { "contextWindow": 1000000, "maxOutputTokens": 32768 }
+    }
+}
+```
+
+| Field | Effect |
+| --- | --- |
+| `contextWindow` | Replaces the catalog's context window when the token budgets are computed. |
+| `maxOutputTokens` | Replaces the catalog's output limit. |
+| `temperature` | Sent with every request to matching models. 0 to 2. |
+| `reasoningEffort` | Sent as `reasoning_effort` with every request. One of `minimal`, `low`, `medium`, `high`. Only meaningful for reasoning models. |
+
+The budget fields exist for deployments the public catalog does not describe, where the conservative fallback limits would waste most of a large context window. The request fields take precedence over a calling extension's `modelOptions`, since a setting records the user's own choice.
+
+## Session usage and cost
+
+The billed token counts are requested with every streamed response, accumulated per model, and combined with the public catalog's prices:
+
+- The status bar shows the running session cost after the first completed request, or the token count when no price is known. Clicking it opens the breakdown.
+- **Tetrate Agent Router: Show Session Usage** prints one line per model: requests, input tokens with the cached share, output tokens with the reasoning share, and cost.
+- Each completed request is logged to the output channel with its counts and cost.
+
+Models with known prices also show them in the model picker, as dollars per million input and output tokens.
+
+Costs are estimates computed from the public catalog's current prices; the Agent Router dashboard is the billing authority. A model absent from the catalog is counted but reported as having no known price. Totals cover the current window only and reset on reload.
+
 ## Commands
 
 | Command | Description |
@@ -143,6 +178,8 @@ Do not put the API key here. It belongs in secret storage, and settings files ar
 | Tetrate Agent Router: Clear Agent Router API Key | Remove the stored key. |
 | Tetrate Agent Router: Set Base URL | Change the endpoint, with validation. |
 | Tetrate Agent Router: Refresh Model List | Discard the cached model list and re-query the endpoint. |
+| Tetrate Agent Router: Show Session Usage | Print the tokens and cost accumulated this session, per model. |
+| Tetrate Agent Router: Show Connection Status | Check the endpoint, the key, and the catalog cache in one report. |
 
 ## Using the models from another extension
 
@@ -234,7 +271,7 @@ await model.sendRequest(messages, {
 });
 ```
 
-`model`, `messages`, `stream`, `tools`, and `tool_choice` cannot be overridden this way. They are applied after `modelOptions` because replacing them would break response handling.
+`model`, `messages`, `stream`, `stream_options`, `tools`, and `tool_choice` cannot be overridden this way. They are applied after `modelOptions` because replacing them would break response handling. A `temperature` or `reasoningEffort` set in the user's `modelOverrides` setting also takes precedence over `modelOptions`.
 
 ## How it works
 
@@ -294,6 +331,8 @@ Responses stream over server-sent events. Text deltas are reported as they arriv
 
 Two timeouts guard the stream. A response that produces no output for three minutes is reported as an error; the allowance is long because reasoning models stream nothing while they think. Once output has started, a gap of sixty seconds between chunks is reported as a stall. Both surface in the chat view and in the output channel.
 
+The billed token counts are requested with `stream_options.include_usage` and arrive on a final chunk that carries no content. They feed the session usage tracking; a gateway that omits the block leaves the request uncounted rather than counted as zero.
+
 Cancelling a request aborts the underlying HTTP request. An aborted request completes quietly instead of surfacing an error.
 
 ### Token counting
@@ -314,7 +353,7 @@ Image cost is a flat estimate, since real cost scales with resolution and comput
 
 - **Output length.** No token cap is sent, so each model's server-side default applies. Sending `max_tokens` unconditionally risks rejection on models that require `max_completion_tokens` instead. Set either through `modelOptions`.
 - **Images.** VS Code offers image attachments only for models that report vision support. The provider forwards every image part it receives as a base64 data URL and does not check the capability itself. Audio and PDF inputs are not forwarded, because the chat-completions content model this endpoint exposes has no place for them.
-- **Reasoning traces** are not surfaced. The provider response part types have no thinking part in the supported VS Code versions.
+- **Reasoning traces** are not surfaced. The provider response part types have no thinking part in the supported VS Code versions. A default `reasoning_effort` can be set per model through `modelOverrides`, and reasoning tokens are reported in the usage breakdown.
 - **Prompt caching** is not configured explicitly. Where the upstream provider applies it automatically, it still takes effect.
 - **Retries** follow the OpenAI SDK default of two retries on transient failures, for three attempts in total. A retry happens only before the stream opens, so a partially delivered answer is never re-requested.
 - **Rate limits and errors** propagate as-is. A 401 or 403 becomes a `LanguageModelError.NoPermissions`, a 404 becomes `NotFound`, and everything else surfaces with the status and the server's message.
@@ -328,8 +367,10 @@ Image cost is a flat estimate, since real cost scales with resolution and comput
 | Models missing after editing settings | `modelFilter` may exclude them. An empty array offers everything. |
 | A 401 on every request | The key is invalid or revoked. Set a fresh one from the dashboard. |
 | A 404 on every request | The base URL is wrong. It must end in `/v1` or another version segment. |
-| Fallback limits on every model | `router.tetrate.ai` is unreachable, so catalog metadata is unavailable. Discovery still works. |
-| "produced no output for 180s" | The model sent nothing for three minutes. A reasoning model on a very long prompt can take this long; lower `reasoning_effort` through `modelOptions`, shorten the prompt, or pick a faster model. |
+| Fallback limits on every model | `router.tetrate.ai` is unreachable, so catalog metadata is unavailable. Discovery still works. Real budgets can be pinned through `modelOverrides`. |
+| Usage reports "price unknown" | The model is absent from the public catalog, so no price is known. Tokens are still counted. |
+| No usage in the status bar | The gateway did not return a usage block on the stream. Counting needs an endpoint that honours `stream_options.include_usage`. |
+| "produced no output for 180s" | The model sent nothing for three minutes. A reasoning model on a very long prompt can take this long; lower the reasoning effort through `modelOverrides` or `modelOptions`, shorten the prompt, or pick a faster model. |
 | "stalled for 60s with no data" | The stream stopped mid-answer. Usually a gateway or network interruption; retry the request. |
 | Stale icon or old behaviour after reinstall | Quit VS Code fully and reopen. Window reload does not clear the icon cache. |
 | Claude models appear twice | Another Claude provider extension is installed. Both contribute under separate vendors. |

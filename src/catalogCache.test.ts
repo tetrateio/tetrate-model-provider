@@ -7,6 +7,7 @@ import {
     type CatalogStore,
     clearPublicCatalogCache,
     loadPublicCatalog,
+    peekPublicCatalog,
 } from './catalogCache';
 
 const NOW = 1_800_000_000_000;
@@ -172,6 +173,34 @@ describe('loadPublicCatalog', () => {
         });
     });
 
+    it('stores prices re-encoded as numbers', async () => {
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(() =>
+                Promise.resolve(
+                    catalogResponse([
+                        {
+                            model: 'gpt-6-sol',
+                            inputTokensPricePer1M: '2.0000000000',
+                            outputTokensPricePer1M: '10.0000000000',
+                            cachedTokensPricePer1M: 'not a price',
+                        },
+                    ])
+                )
+            )
+        );
+        const store = makeStore();
+
+        await loadPublicCatalog(store, undefined, NOW);
+        const stored = store.read() as { models: CatalogModel[] };
+
+        expect(stored.models[0]).toMatchObject({
+            inputTokensPricePer1M: 2,
+            outputTokensPricePer1M: 10,
+        });
+        expect(stored.models[0]?.cachedTokensPricePer1M).toBeUndefined();
+    });
+
     it('survives a storage write that fails', async () => {
         vi.stubGlobal(
             'fetch',
@@ -193,5 +222,28 @@ describe('clearPublicCatalogCache', () => {
         const store = makeStore({ fetchedAt: NOW, models: [] });
         await clearPublicCatalogCache(store);
         expect(store.read()).toBeUndefined();
+    });
+});
+
+describe('peekPublicCatalog', () => {
+    it('returns the stored copy however stale, without the network', async () => {
+        const fetchMock = vi.fn();
+        vi.stubGlobal('fetch', fetchMock);
+        const store = makeStore({
+            fetchedAt: NOW - 10 * CATALOG_TTL_MS,
+            models: [{ model: 'old-model' }],
+        });
+
+        expect(peekPublicCatalog(store)?.models).toEqual([
+            { model: 'old-model' },
+        ]);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('reads an empty or malformed store as absent', () => {
+        expect(peekPublicCatalog(makeStore())).toBeUndefined();
+        expect(
+            peekPublicCatalog(makeStore({ models: 'not-an-array' }))
+        ).toBeUndefined();
     });
 });

@@ -5,7 +5,9 @@ import {
     isIncludedByFilter,
     matchesPattern,
     normalizeBaseUrl,
+    overridesFor,
     sanitizeHeaders,
+    sanitizeOverrides,
 } from './config';
 
 describe('normalizeBaseUrl', () => {
@@ -93,6 +95,73 @@ describe('isIncludedByFilter', () => {
         expect(isIncludedByFilter('claude-sonnet-5', filter)).toBe(true);
         expect(isIncludedByFilter('gpt-5-mini', filter)).toBe(true);
         expect(isIncludedByFilter('gemini-2.5-flash', filter)).toBe(false);
+    });
+});
+
+describe('sanitizeOverrides', () => {
+    it('keeps valid fields and drops invalid ones in isolation', () => {
+        expect(
+            sanitizeOverrides({
+                'claude-*': {
+                    contextWindow: 200_000.7,
+                    maxOutputTokens: -1,
+                    temperature: 0.5,
+                    reasoningEffort: 'extreme',
+                },
+            })
+        ).toEqual({
+            'claude-*': { contextWindow: 200_000, temperature: 0.5 },
+        });
+    });
+
+    it('accepts every documented reasoning effort', () => {
+        for (const effort of ['minimal', 'low', 'medium', 'high']) {
+            expect(
+                sanitizeOverrides({ m: { reasoningEffort: effort } })
+            ).toEqual({ m: { reasoningEffort: effort } });
+        }
+    });
+
+    it('rejects a temperature outside the protocol range', () => {
+        expect(sanitizeOverrides({ m: { temperature: 2.5 } })).toEqual({});
+        expect(sanitizeOverrides({ m: { temperature: 0 } })).toEqual({
+            m: { temperature: 0 },
+        });
+    });
+
+    it('drops entries that are not objects or carry nothing usable', () => {
+        expect(
+            sanitizeOverrides({
+                a: 'high',
+                b: null,
+                c: [1],
+                d: { unknownField: 1 },
+                '': { temperature: 1 },
+            })
+        ).toEqual({});
+    });
+});
+
+describe('overridesFor', () => {
+    it('merges matching patterns in declaration order, later wins per field', () => {
+        const overrides = {
+            '*': { temperature: 1 },
+            'claude-*': { temperature: 0.2, reasoningEffort: 'high' as const },
+        };
+
+        expect(overridesFor('claude-opus-5', overrides)).toEqual({
+            temperature: 0.2,
+            reasoningEffort: 'high',
+        });
+        expect(overridesFor('gpt-5-mini', overrides)).toEqual({
+            temperature: 1,
+        });
+    });
+
+    it('returns an empty override when nothing matches', () => {
+        expect(
+            overridesFor('gpt-5-mini', { 'claude-*': { temperature: 0.2 } })
+        ).toEqual({});
     });
 });
 

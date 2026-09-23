@@ -2,15 +2,24 @@ import OpenAI, { type ClientOptions } from 'openai';
 import * as vscode from 'vscode';
 
 import {
+    type CatalogModel,
     fetchApiModels,
+    type ModelPricing,
+    pricingOf,
     RequestTimeoutError,
     selectChatModels,
 } from './catalog';
-import { loadPublicCatalog } from './catalogCache';
-import { getConfig, type ProviderConfig } from './config';
+import { loadPublicCatalog, peekPublicCatalog } from './catalogCache';
+import {
+    getConfig,
+    type ModelOverride,
+    overridesFor,
+    type ProviderConfig,
+} from './config';
 import { convertMessages, convertToolMode, convertTools } from './messages';
 import { getApiKey, promptForApiKey } from './secrets';
 import { countTokens } from './tokenCount';
+import { formatCost, formatTokens, type RequestUsage, UsageTracker } from './usage';
 
 const USER_AGENT = 'vscode-tetrate-model-provider';
 
@@ -65,8 +74,18 @@ export class TetrateChatModelProvider
     private readonly onDidChange = new vscode.EventEmitter<void>();
     readonly onDidChangeLanguageModelChatInformation = this.onDidChange.event;
 
+    /** Session usage totals; the extension wires this to the status bar. */
+    readonly usage = new UsageTracker();
+
     /** Keyed by base URL and filter so a settings change cannot serve stale models. */
     private cache?: CachedModels;
+
+    /**
+     * Catalog prices by lowercased model id, for costing responses. Filled by
+     * discovery, and lazily from the stored catalog for a window that answers
+     * a request before it ever lists models.
+     */
+    private pricingById?: Map<string, ModelPricing>;
 
     /** Collapses overlapping discovery calls onto one pair of requests. */
     private inflight?: {
@@ -182,6 +201,7 @@ export class TetrateChatModelProvider
             ]);
 
             const models = selectChatModels(apiModels, catalog, config);
+            this.pricingById = indexPricing(catalog.values());
             this.log.info(
                 `Discovered ${models.length} chat model(s) at ${config.baseUrl}`
             );
@@ -265,11 +285,19 @@ export class TetrateChatModelProvider
                     // temperature, max_tokens or reasoning_effort straight
                     // through. Spread first so the fields below cannot be
                     // overridden — clobbering `stream` or `messages` would
-                    // break the response handling outright.
+                    // break the response handling outright. The per-model
+                    // overrides sit in between: they are the user's own
+                    // setting, so they outrank a calling extension's defaults.
                     ...(options.modelOptions ?? {}),
+                    ...overrideParams(
+                        overridesFor(model.id, config.modelOverrides)
+                    ),
                     model: model.id,
                     messages: chatMessages,
                     stream: true,
+                    // Asks for billed token counts on a final chunk that
+                    // carries an empty `choices` array.
+                    stream_options: { include_usage: true },
                     ...(tools
                         ? {
                               tools,
@@ -282,6 +310,7 @@ export class TetrateChatModelProvider
 
             const toolCalls = new ToolCallAccumulator(`call_${this.turn++}`);
             let finishReason: string | undefined;
+            let usage: OpenAI.Completions.CompletionUsage | undefined;
             let reportedText = 0;
             let outputStarted = false;
 
@@ -289,6 +318,9 @@ export class TetrateChatModelProvider
             // SDK raises it as an APIError before yielding.
             armIdleTimer('first');
             for await (const chunk of stream) {
+                if (chunk.usage) {
+                    usage = chunk.usage;
+                }
                 const choice = chunk.choices[0];
                 if (choice?.finish_reason) {
                     finishReason = choice.finish_reason;
@@ -348,6 +380,7 @@ export class TetrateChatModelProvider
                 calls.length,
                 progress
             );
+            this.recordUsage(model.id, usage);
         } catch (error) {
             if (stalled) {
                 this.log.error(stalled.message);
@@ -413,6 +446,57 @@ export class TetrateChatModelProvider
                 `${model.id} returned an empty response (finish_reason=${finishReason ?? 'none'}).`
             );
         }
+    }
+
+    /**
+     * Books the billed counts from the stream's usage block. A gateway that
+     * ignores `stream_options` sends none, which is booked as nothing rather
+     * than as a zero-token request.
+     */
+    private recordUsage(
+        modelId: string,
+        usage: OpenAI.Completions.CompletionUsage | undefined
+    ): void {
+        if (!usage) {
+            return;
+        }
+        const request: RequestUsage = {
+            inputTokens: usage.prompt_tokens ?? 0,
+            cachedInputTokens: usage.prompt_tokens_details?.cached_tokens ?? 0,
+            outputTokens: usage.completion_tokens ?? 0,
+            reasoningTokens:
+                usage.completion_tokens_details?.reasoning_tokens ?? 0,
+        };
+        const cost = this.usage.record(
+            modelId,
+            request,
+            this.pricingFor(modelId)
+        );
+
+        const cached =
+            request.cachedInputTokens > 0
+                ? ` (${formatTokens(request.cachedInputTokens)} cached)`
+                : '';
+        const reasoning =
+            request.reasoningTokens > 0
+                ? ` incl. ${formatTokens(request.reasoningTokens)} reasoning`
+                : '';
+        this.log.info(
+            `${modelId}: ${formatTokens(request.inputTokens)} in${cached} + ${formatTokens(request.outputTokens)} out${reasoning}${
+                cost !== undefined ? ` ≈ ${formatCost(cost)}` : ''
+            }`
+        );
+    }
+
+    private pricingFor(modelId: string): ModelPricing | undefined {
+        if (!this.pricingById) {
+            // No discovery has run in this window yet; the stored catalog is
+            // still likely to know the model, and reading it is synchronous.
+            this.pricingById = indexPricing(
+                peekPublicCatalog(this.context.globalState)?.models ?? []
+            );
+        }
+        return this.pricingById.get(modelId.toLowerCase());
     }
 
     async provideTokenCount(
@@ -485,6 +569,33 @@ export class TetrateChatModelProvider
             );
         }
     }
+}
+
+function indexPricing(
+    models: Iterable<CatalogModel>
+): Map<string, ModelPricing> {
+    const byId = new Map<string, ModelPricing>();
+    for (const model of models) {
+        const pricing = pricingOf(model);
+        if (pricing) {
+            byId.set(model.model.toLowerCase(), pricing);
+        }
+    }
+    return byId;
+}
+
+/** The request-shaped half of a per-model override. */
+function overrideParams(
+    override: ModelOverride
+): Partial<OpenAI.Chat.Completions.ChatCompletionCreateParams> {
+    return {
+        ...(override.temperature !== undefined
+            ? { temperature: override.temperature }
+            : {}),
+        ...(override.reasoningEffort !== undefined
+            ? { reasoning_effort: override.reasoningEffort }
+            : {}),
+    };
 }
 
 type StreamedToolCall = {

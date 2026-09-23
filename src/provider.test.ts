@@ -454,6 +454,104 @@ describe('provideLanguageModelChatResponse', () => {
         expect(h.requests[0]?.body).not.toHaveProperty('tools');
         expect(h.requests[0]?.body).not.toHaveProperty('tool_choice');
     });
+
+    it('asks for billed usage, and callers cannot switch it off', async () => {
+        const h = harness({ steps: [finish('stop')] });
+
+        await h.run({ modelOptions: { stream_options: { include_usage: false } } });
+
+        expect(h.requests[0]?.body).toMatchObject({
+            stream_options: { include_usage: true },
+        });
+    });
+
+    it('records billed usage from the final chunk', async () => {
+        const h = harness({
+            steps: [
+                text('hi'),
+                finish('stop'),
+                usageChunk({
+                    prompt_tokens: 1200,
+                    completion_tokens: 34,
+                    total_tokens: 1234,
+                    prompt_tokens_details: { cached_tokens: 200 },
+                    completion_tokens_details: { reasoning_tokens: 10 },
+                }),
+            ],
+        });
+
+        await h.run();
+
+        expect(h.provider.usage.requestCount).toBe(1);
+        expect(h.provider.usage.totalTokens).toBe(1234);
+        expect(h.log.info).toHaveBeenCalledWith(
+            expect.stringContaining('1,200 in (200 cached) + 34 out')
+        );
+    });
+
+    it('records nothing when the gateway sends no usage block', async () => {
+        const h = harness({ steps: [text('hi'), finish('stop')] });
+
+        await h.run();
+
+        expect(h.provider.usage.requestCount).toBe(0);
+    });
+
+    it('prices a request from the cached public catalog', async () => {
+        const h = harness(
+            {
+                steps: [
+                    text('hi'),
+                    finish('stop'),
+                    usageChunk({
+                        prompt_tokens: 1_000_000,
+                        completion_tokens: 0,
+                        total_tokens: 1_000_000,
+                    }),
+                ],
+            },
+            {
+                storedCatalog: {
+                    fetchedAt: Date.now(),
+                    models: [
+                        {
+                            model: 'claude-test',
+                            inputTokensPricePer1M: 2,
+                            outputTokensPricePer1M: 10,
+                        },
+                    ],
+                },
+            }
+        );
+
+        await h.run();
+
+        expect(h.provider.usage.totalCost).toBeCloseTo(2);
+        expect(h.log.info).toHaveBeenCalledWith(
+            expect.stringContaining('$2.00')
+        );
+    });
+
+    it('applies per-model overrides, outranking caller modelOptions', async () => {
+        const { configValues } = vscode as unknown as {
+            configValues: Record<string, unknown>;
+        };
+        configValues.modelOverrides = {
+            'claude-*': { temperature: 0.1, reasoningEffort: 'high' },
+        };
+        try {
+            const h = harness({ steps: [finish('stop')] });
+
+            await h.run({ modelOptions: { temperature: 0.9 } });
+
+            expect(h.requests[0]?.body).toMatchObject({
+                temperature: 0.1,
+                reasoning_effort: 'high',
+            });
+        } finally {
+            delete configValues.modelOverrides;
+        }
+    });
 });
 
 const MODEL: vscode.LanguageModelChatInformation = {
@@ -488,6 +586,16 @@ const roleOnly = () => chunk({ role: 'assistant' });
 const text = (content: string) => chunk({ content });
 const finish = (reason: FinishReason) => chunk({}, reason);
 const toolCall = (call: ToolCallDelta) => chunk({ tool_calls: [call] });
+
+/** The extra final chunk `stream_options.include_usage` produces. */
+const usageChunk = (usage: OpenAI.Completions.CompletionUsage): Chunk => ({
+    id: 'chunk',
+    object: 'chat.completion.chunk',
+    created: 0,
+    model: MODEL.id,
+    choices: [],
+    usage,
+});
 
 function texts(parts: readonly vscode.LanguageModelResponsePart[]): string[] {
     return parts
@@ -614,7 +722,11 @@ function cancellationToken() {
     return token;
 }
 
-type HarnessOptions = { storedKey?: string | undefined };
+type HarnessOptions = {
+    storedKey?: string | undefined;
+    /** Served as the persisted public-catalog cache, for pricing lookups. */
+    storedCatalog?: unknown;
+};
 
 function harness(behaviour: Behaviour, options: HarnessOptions = {}) {
     const storedKey = 'storedKey' in options ? options.storedKey : 'sk-test';
@@ -623,7 +735,7 @@ function harness(behaviour: Behaviour, options: HarnessOptions = {}) {
     const context = {
         secrets: { get: vi.fn(() => Promise.resolve(storedKey)) },
         globalState: {
-            get: () => undefined,
+            get: () => options.storedCatalog,
             update: () => Promise.resolve(),
         },
     };
@@ -656,6 +768,7 @@ function harness(behaviour: Behaviour, options: HarnessOptions = {}) {
         parts,
         log,
         token,
+        provider,
         create: fake.create,
         requests: fake.requests,
     };

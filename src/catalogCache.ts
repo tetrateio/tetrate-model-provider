@@ -4,6 +4,7 @@ import {
     type CatalogModel,
     fetchPublicCatalogModels,
     indexCatalog,
+    parsePrice,
 } from './catalog';
 
 /**
@@ -27,7 +28,7 @@ export const CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
 /** Bounds what a description can contribute to the stored blob. */
 const MAX_DESCRIPTION_LENGTH = 300;
 
-type StoredCatalog = {
+export type StoredCatalog = {
     fetchedAt: number;
     models: CatalogModel[];
 };
@@ -71,6 +72,17 @@ export async function clearPublicCatalogCache(
     store: CatalogStore
 ): Promise<void> {
     await store.update(CATALOG_CACHE_KEY, undefined);
+}
+
+/**
+ * Reads whatever copy is stored, however stale, without touching the network.
+ * Used where an answer is needed synchronously (pricing for a request already
+ * in flight) or where the age itself is the information (the status report).
+ */
+export function peekPublicCatalog(
+    store: CatalogStore
+): StoredCatalog | undefined {
+    return readCache(store);
 }
 
 /**
@@ -127,7 +139,20 @@ function compact(model: CatalogModel): CatalogModel {
             ? { limits: { max_output_tokens: model.limits.max_output_tokens } }
             : {}),
         ...(metadata ? { metadata } : {}),
+        // Prices arrive as ten-decimal strings; storing them as numbers keeps
+        // the blob smaller and saves re-parsing on every read.
+        ...priceField('inputTokensPricePer1M', model.inputTokensPricePer1M),
+        ...priceField('outputTokensPricePer1M', model.outputTokensPricePer1M),
+        ...priceField('cachedTokensPricePer1M', model.cachedTokensPricePer1M),
     };
+}
+
+function priceField(
+    key: keyof CatalogModel,
+    value: string | number | undefined
+): Partial<CatalogModel> {
+    const parsed = parsePrice(value);
+    return parsed === undefined ? {} : { [key]: parsed };
 }
 
 function truncate(text: string): string {

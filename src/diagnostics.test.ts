@@ -1,0 +1,101 @@
+import { describe, expect, it } from 'vitest';
+
+import type { ProviderConfig } from './config';
+import { buildStatusReport, formatAge, type StatusInput } from './diagnostics';
+
+const config: ProviderConfig = {
+    baseUrl: 'https://api.router.tetrate.ai/v1',
+    modelFilter: [],
+    requestHeaders: {},
+    modelOverrides: {},
+};
+
+const base: StatusInput = {
+    version: '0.5.0',
+    config,
+    keyStored: true,
+    probeModels: () => Promise.resolve({ reachable: 163, offered: 12 }),
+    catalog: { fetchedAt: 0, entries: 210 },
+    now: 3 * 60 * 60 * 1000,
+};
+
+describe('buildStatusReport', () => {
+    it('reports a healthy connection with counts and catalog age', async () => {
+        const report = await buildStatusReport(base);
+
+        expect(report.healthy).toBe(true);
+        expect(report.summary).toContain('163 model(s) reachable');
+        expect(report.lines).toEqual([
+            'Extension version: 0.5.0',
+            'Base URL: https://api.router.tetrate.ai/v1',
+            'API key: stored in secret storage',
+            'Models endpoint: 163 model(s) reachable, 12 offered after filters',
+            'Public catalog: 210 entries, refreshed 3 h ago',
+            'Model filter: (none)',
+            'Model overrides: (none)',
+            'Request headers: (none)',
+        ]);
+    });
+
+    it('skips the probe and points at the key command when no key is stored', async () => {
+        const report = await buildStatusReport({
+            ...base,
+            keyStored: false,
+            probeModels: undefined,
+        });
+
+        expect(report.healthy).toBe(false);
+        expect(report.summary).toContain('Set Agent Router API Key');
+        expect(report.lines[3]).toContain('no API key is stored');
+    });
+
+    it('surfaces a probe failure with its message', async () => {
+        const report = await buildStatusReport({
+            ...base,
+            probeModels: () => Promise.reject(new Error('HTTP 401: bad key')),
+        });
+
+        expect(report.healthy).toBe(false);
+        expect(report.summary).toContain('Could not list models');
+        expect(report.lines[3]).toContain('HTTP 401: bad key');
+    });
+
+    it('flags a connection that offers no models as unhealthy', async () => {
+        const report = await buildStatusReport({
+            ...base,
+            config: { ...config, modelFilter: ['no-such-*'] },
+            probeModels: () => Promise.resolve({ reachable: 163, offered: 0 }),
+        });
+
+        expect(report.healthy).toBe(false);
+        expect(report.summary).toContain('no models are offered');
+        expect(report.lines[5]).toBe('Model filter: 1 pattern');
+    });
+
+    it('reports a missing catalog cache as such', async () => {
+        const report = await buildStatusReport({ ...base, catalog: undefined });
+        expect(report.lines[4]).toBe('Public catalog: not cached yet');
+    });
+
+    it('counts overrides and headers', async () => {
+        const report = await buildStatusReport({
+            ...base,
+            config: {
+                ...config,
+                modelOverrides: { 'claude-*': { temperature: 0.2 } },
+                requestHeaders: { 'X-Tenant-Id': 'a', 'X-Region': 'b' },
+            },
+        });
+        expect(report.lines[6]).toBe('Model overrides: 1 entry');
+        expect(report.lines[7]).toBe('Request headers: 2 headers');
+    });
+});
+
+describe('formatAge', () => {
+    it('rounds to the most useful unit', () => {
+        expect(formatAge(30_000)).toBe('less than a minute');
+        expect(formatAge(5 * 60_000)).toBe('5 min');
+        expect(formatAge(3 * 60 * 60_000)).toBe('3 h');
+        expect(formatAge(72 * 60 * 60_000)).toBe('3 d');
+    });
+});

@@ -11,10 +11,13 @@ import {
     familyOf,
     fetchApiModels,
     fetchPublicCatalogModels,
+    formatPrice,
     isChatModel,
     MAX_CATALOG_PAGES,
     MIN_INPUT_TOKENS,
     MODELS_ATTEMPTS,
+    parsePrice,
+    pricingOf,
     RequestTimeoutError,
     selectChatModels,
     toChatInformation,
@@ -44,7 +47,7 @@ describe('toChatInformation', () => {
             version: '5.0',
             maxOutputTokens: 128_000,
             detail: 'Agent Router · anthropic',
-            tooltip: 'For complex agentic coding.',
+            tooltip: 'For complex agentic coding.\nReasoning model.',
         });
         expect(info.maxInputTokens).toBe(1_000_000 - 128_000);
         expect(info.capabilities).toEqual({
@@ -158,6 +161,92 @@ describe('toChatInformation', () => {
         expect(info.family).toBe('groq');
         expect(info.detail).toBe('Agent Router · groq');
     });
+
+    it('shows the price in the picker when the catalog carries one', () => {
+        const info = toChatInformation(
+            { id: 'gpt-6-sol' },
+            {
+                model: 'gpt-6-sol',
+                provider: 'openai',
+                mode: 'responses',
+                contextWindow: 1_050_000,
+                inputTokensPricePer1M: '2.0000000000',
+                outputTokensPricePer1M: '10.0000000000',
+            }
+        );
+
+        expect(info.detail).toBe('Agent Router · openai · $2/$10 per 1M');
+        expect(info.tooltip).toContain(
+            'Input $2, output $10 per million tokens.'
+        );
+    });
+
+    it('leaves the picker unpriced when either half is missing', () => {
+        const info = toChatInformation(
+            { id: 'half-priced' },
+            {
+                model: 'half-priced',
+                provider: 'openai',
+                mode: 'chat',
+                inputTokensPricePer1M: '2.0',
+            }
+        );
+
+        expect(info.detail).toBe('Agent Router · openai');
+        expect(info.tooltip).not.toContain('$');
+    });
+
+    it('lets an override replace the catalog budgets', () => {
+        const info = toChatInformation({ id: 'claude-opus-5' }, opus, {
+            contextWindow: 200_000,
+            maxOutputTokens: 32_000,
+        });
+
+        expect(info.maxOutputTokens).toBe(32_000);
+        expect(info.maxInputTokens).toBe(200_000 - 32_000);
+    });
+
+    it('lets an override give an uncatalogued model real budgets', () => {
+        const info = toChatInformation({ id: 'in-house-model' }, undefined, {
+            contextWindow: 1_000_000,
+        });
+
+        expect(info.maxInputTokens).toBe(
+            1_000_000 - FALLBACK_MAX_OUTPUT_TOKENS
+        );
+    });
+});
+
+describe('pricing helpers', () => {
+    it('parses the catalog string encoding and the cached number encoding', () => {
+        expect(parsePrice('2.0000000000')).toBe(2);
+        expect(parsePrice(0.25)).toBe(0.25);
+        expect(parsePrice(undefined)).toBeUndefined();
+        expect(parsePrice('not a price')).toBeUndefined();
+        expect(parsePrice(-1)).toBeUndefined();
+    });
+
+    it('requires both directions before reporting a price', () => {
+        expect(pricingOf({ model: 'x' })).toBeUndefined();
+        expect(
+            pricingOf({ model: 'x', inputTokensPricePer1M: '2' })
+        ).toBeUndefined();
+        expect(
+            pricingOf({
+                model: 'x',
+                inputTokensPricePer1M: '2',
+                outputTokensPricePer1M: '10',
+                cachedTokensPricePer1M: '0.2',
+            })
+        ).toEqual({ inputPer1M: 2, outputPer1M: 10, cachedPer1M: 0.2 });
+    });
+
+    it('formats prices without noise digits', () => {
+        expect(formatPrice(2)).toBe('$2');
+        expect(formatPrice(10)).toBe('$10');
+        expect(formatPrice(0.25)).toBe('$0.25');
+        expect(formatPrice(0.075)).toBe('$0.075');
+    });
 });
 
 describe('isChatModel', () => {
@@ -247,6 +336,17 @@ describe('selectChatModels', () => {
             modelFilter: ['claude-*'],
         });
         expect(models.map((model) => model.id)).toEqual(['claude-opus-5']);
+    });
+
+    it('applies matching model overrides', () => {
+        const models = selectChatModels(apiModels, catalog, {
+            modelFilter: ['claude-*'],
+            modelOverrides: {
+                'claude-*': { maxOutputTokens: 64_000 },
+                'gpt-*': { maxOutputTokens: 1 },
+            },
+        });
+        expect(models[0]?.maxOutputTokens).toBe(64_000);
     });
 });
 

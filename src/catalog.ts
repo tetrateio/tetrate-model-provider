@@ -1,6 +1,11 @@
 import * as vscode from 'vscode';
 
-import { isIncludedByFilter, type ProviderConfig } from './config';
+import {
+    isIncludedByFilter,
+    type ModelOverride,
+    overridesFor,
+    type ProviderConfig,
+} from './config';
 
 /** One entry of `GET {baseUrl}/models`, which is OpenAI-shaped. */
 export type ApiModel = {
@@ -26,6 +31,18 @@ export type CatalogModel = {
     modalities?: { input?: string[]; output?: string[] };
     limits?: { max_output_tokens?: number };
     metadata?: { description?: string; display_name?: string };
+    // The live catalog serves prices as decimal strings; the local cache
+    // stores them re-encoded as numbers. parsePrice() accepts both.
+    inputTokensPricePer1M?: string | number;
+    outputTokensPricePer1M?: string | number;
+    cachedTokensPricePer1M?: string | number;
+};
+
+/** Catalog prices in dollars per million tokens, parsed and validated. */
+export type ModelPricing = {
+    inputPer1M: number;
+    outputPer1M: number;
+    cachedPer1M?: number;
 };
 
 export const PUBLIC_CATALOG_URL =
@@ -235,16 +252,60 @@ export function indexCatalog(
     return byId;
 }
 
+/**
+ * Reads a catalog price. Prices arrive as decimal strings from the live
+ * catalog and as numbers from the local cache; anything negative or
+ * unparseable reads as absent, since a wrong price is worse than none.
+ */
+export function parsePrice(
+    value: string | number | undefined
+): number | undefined {
+    if (value === undefined) {
+        return undefined;
+    }
+    const parsed = typeof value === 'number' ? value : Number(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+/**
+ * Returns pricing only when both directions are known. Cost arithmetic with a
+ * missing half would understate every request, which is worse than reporting
+ * the price as unknown.
+ */
+export function pricingOf(
+    catalogModel: CatalogModel | undefined
+): ModelPricing | undefined {
+    const inputPer1M = parsePrice(catalogModel?.inputTokensPricePer1M);
+    const outputPer1M = parsePrice(catalogModel?.outputTokensPricePer1M);
+    if (inputPer1M === undefined || outputPer1M === undefined) {
+        return undefined;
+    }
+    const cachedPer1M = parsePrice(catalogModel?.cachedTokensPricePer1M);
+    return {
+        inputPer1M,
+        outputPer1M,
+        ...(cachedPer1M !== undefined ? { cachedPer1M } : {}),
+    };
+}
+
+/** `$2`, `$0.25`, `$0.075`: dollars per million tokens without noise digits. */
+export function formatPrice(perMillion: number): string {
+    return `$${Number(perMillion.toFixed(4))}`;
+}
+
 export function toChatInformation(
     apiModel: ApiModel,
-    catalogModel: CatalogModel | undefined
+    catalogModel: CatalogModel | undefined,
+    override: ModelOverride = {}
 ): vscode.LanguageModelChatInformation {
+    // A user override outranks the catalog: it exists for models the catalog
+    // does not describe, or describes wrongly for a given deployment.
     const declaredOutput = clampPositive(
-        catalogModel?.limits?.max_output_tokens,
+        override.maxOutputTokens ?? catalogModel?.limits?.max_output_tokens,
         FALLBACK_MAX_OUTPUT_TOKENS
     );
     const contextWindow = clampPositive(
-        catalogModel?.contextWindow,
+        override.contextWindow ?? catalogModel?.contextWindow,
         FALLBACK_CONTEXT_WINDOW
     );
 
@@ -276,6 +337,29 @@ export function toChatInformation(
     const inputModalities = catalogModel?.modalities?.input ?? [];
     const provider = catalogModel?.provider ?? apiModel.owned_by;
 
+    // Cost is the axis the Agent Router routes on, so the picker shows it
+    // where the models are compared instead of leaving it on the dashboard.
+    const pricing = pricingOf(catalogModel);
+    const priceLabel = pricing
+        ? `${formatPrice(pricing.inputPer1M)}/${formatPrice(pricing.outputPer1M)} per 1M`
+        : undefined;
+
+    const detail = [
+        provider ? `Agent Router · ${provider}` : 'Agent Router',
+        ...(priceLabel ? [priceLabel] : []),
+    ].join(' · ');
+
+    const tooltip = [
+        catalogModel?.metadata?.description ??
+            `${apiModel.id} via Tetrate Agent Router Service`,
+        ...(pricing
+            ? [
+                  `Input ${formatPrice(pricing.inputPer1M)}, output ${formatPrice(pricing.outputPer1M)} per million tokens.`,
+              ]
+            : []),
+        ...(capabilities.includes('reasoning') ? ['Reasoning model.'] : []),
+    ].join('\n');
+
     return {
         id: apiModel.id,
         name:
@@ -284,10 +368,8 @@ export function toChatInformation(
             apiModel.id,
         family: familyOf(apiModel.id, provider),
         version: versionOf(apiModel.id),
-        detail: provider ? `Agent Router · ${provider}` : 'Agent Router',
-        tooltip:
-            catalogModel?.metadata?.description ??
-            `${apiModel.id} via Tetrate Agent Router Service`,
+        detail,
+        tooltip,
         maxInputTokens,
         maxOutputTokens,
         capabilities: {
@@ -305,7 +387,8 @@ export function toChatInformation(
 export function selectChatModels(
     apiModels: ApiModel[],
     catalog: Map<string, CatalogModel>,
-    config: Pick<ProviderConfig, 'modelFilter'>
+    config: Pick<ProviderConfig, 'modelFilter'> &
+        Partial<Pick<ProviderConfig, 'modelOverrides'>>
 ): vscode.LanguageModelChatInformation[] {
     const seen = new Set<string>();
     const models: vscode.LanguageModelChatInformation[] = [];
@@ -323,7 +406,13 @@ export function selectChatModels(
         if (!isIncludedByFilter(apiModel.id, config.modelFilter)) {
             continue;
         }
-        models.push(toChatInformation(apiModel, catalogModel));
+        models.push(
+            toChatInformation(
+                apiModel,
+                catalogModel,
+                overridesFor(apiModel.id, config.modelOverrides ?? {})
+            )
+        );
     }
 
     return models.sort((a, b) => a.name.localeCompare(b.name));

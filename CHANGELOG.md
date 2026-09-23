@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+Usage visibility and per-model control. No existing settings changed, and no action is needed on upgrade.
+
+### Added
+
+- Token usage and cost tracking. The billed token counts are requested with every streamed response and accumulated per model for the session. The status bar shows the running session cost, or the token count when no price is known, and **Show Session Usage** prints the per-model breakdown. Each completed request is also logged with its counts and cost. Costs are computed from the public catalog's prices; a request whose model has no known price is still counted and is reported as unpriced.
+- Prices in the model picker. A model with known pricing shows its input and output price per million tokens in the picker detail and in the tooltip, and reasoning models are marked in the tooltip.
+- A `modelOverrides` setting, keyed by the same glob patterns as `modelFilter`. `contextWindow` and `maxOutputTokens` replace catalog values, which gives real budgets to models the public catalog does not describe. `temperature` and `reasoningEffort` are sent with every request to matching models and take precedence over a calling extension's `modelOptions`.
+- A **Show Connection Status** command. The extension version, the base URL, whether a key is stored, a live check of the models endpoint with reachable and offered counts, and the age of the cached catalog are reported in one place.
+
 ## 0.4.0
 
 Correctness fixes to model budgets and streaming, and unit tests for the streaming path. No settings changed, and no action is needed on upgrade.

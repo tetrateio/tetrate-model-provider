@@ -20,6 +20,17 @@ export enum ConfigurationTarget {
     WorkspaceFolder = 3,
 }
 
+export enum StatusBarAlignment {
+    Left = 1,
+    Right = 2,
+}
+
+export enum ProgressLocation {
+    SourceControl = 1,
+    Window = 10,
+    Notification = 15,
+}
+
 export class LanguageModelTextPart {
     constructor(public value: string) {}
 }
@@ -134,8 +145,19 @@ export const window = {
         info() {},
         warn() {},
         error() {},
+        show() {},
         dispose() {},
     }),
+    createStatusBarItem: () => ({
+        name: '',
+        text: '',
+        tooltip: '',
+        command: undefined as string | undefined,
+        show() {},
+        hide() {},
+        dispose() {},
+    }),
+    withProgress: <T>(_options: unknown, task: () => Thenable<T>) => task(),
 };
 
 export const commands = {

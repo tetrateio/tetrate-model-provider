@@ -73,6 +73,14 @@
             {
                 "command": "tetrate-model-provider.refreshModels",
                 "title": "Tetrate Agent Router: Refresh Model List"
+            },
+            {
+                "command": "tetrate-model-provider.showUsage",
+                "title": "Tetrate Agent Router: Show Session Usage"
+            },
+            {
+                "command": "tetrate-model-provider.showStatus",
+                "title": "Tetrate Agent Router: Show Connection Status"
             }
         ],
         "configuration": {
@@ -93,6 +101,43 @@
                     },
                     "default": [],
                     "markdownDescription": "Only offer models whose id matches one of these glob patterns, for example `claude-*` or `gpt-5.6-terra`. Leave empty to offer every chat model the API key can reach."
+                },
+                "tetrate-model-provider.modelOverrides": {
+                    "type": "object",
+                    "default": {},
+                    "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                            "contextWindow": {
+                                "type": "number",
+                                "minimum": 1,
+                                "description": "Context window in tokens, replacing the catalog value. Intended for models the public catalog does not describe."
+                            },
+                            "maxOutputTokens": {
+                                "type": "number",
+                                "minimum": 1,
+                                "description": "Output limit in tokens, replacing the catalog value."
+                            },
+                            "temperature": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 2,
+                                "description": "Sampling temperature sent with every request to matching models."
+                            },
+                            "reasoningEffort": {
+                                "type": "string",
+                                "enum": [
+                                    "minimal",
+                                    "low",
+                                    "medium",
+                                    "high"
+                                ],
+                                "description": "Reasoning effort sent with every request to matching models. Only meaningful for reasoning models."
+                            }
+                        },
+                        "additionalProperties": false
+                    },
+                    "markdownDescription": "Per-model settings, keyed by the same `*` glob patterns as `#tetrate-model-provider.modelFilter#`. When several patterns match one model, later entries win field by field. Example: `{ \"claude-*\": { \"reasoningEffort\": \"high\" } }`."
                 },
                 "tetrate-model-provider.requestHeaders": {
                     "type": "object",

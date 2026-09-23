@@ -10,6 +10,25 @@ export type ProviderConfig = {
     baseUrl: string;
     modelFilter: string[];
     requestHeaders: Record<string, string>;
+    modelOverrides: Record<string, ModelOverride>;
+};
+
+/** Effort levels the OpenAI protocol accepts for `reasoning_effort`. */
+export const REASONING_EFFORTS = ['minimal', 'low', 'medium', 'high'] as const;
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+
+/**
+ * Per-model tuning from the `modelOverrides` setting, keyed by the same glob
+ * syntax as `modelFilter`. The budget fields exist for deployments the public
+ * catalog does not describe, where the conservative fallbacks waste most of a
+ * large context window; the request fields are defaults the user sets once
+ * instead of relying on every caller to pass them.
+ */
+export type ModelOverride = {
+    contextWindow?: number;
+    maxOutputTokens?: number;
+    temperature?: number;
+    reasoningEffort?: ReasoningEffort;
 };
 
 export function getConfig(): ProviderConfig {
@@ -21,6 +40,9 @@ export function getConfig(): ProviderConfig {
         ),
         requestHeaders: sanitizeHeaders(
             config.get<Record<string, string>>('requestHeaders', {})
+        ),
+        modelOverrides: sanitizeOverrides(
+            config.get<Record<string, unknown>>('modelOverrides', {})
         ),
     };
 }
@@ -64,6 +86,86 @@ export function normalizeBaseUrl(value: string | undefined): string {
         return withoutTrailingSlashes;
     }
     return `${withoutTrailingSlashes}/v1`;
+}
+
+/**
+ * Settings survive hand-editing, so every field is validated rather than
+ * trusted. A value that fails validation is dropped in isolation; one typo
+ * must not discard the whole overrides object.
+ */
+export function sanitizeOverrides(
+    overrides: Record<string, unknown>
+): Record<string, ModelOverride> {
+    const result: Record<string, ModelOverride> = {};
+    for (const [pattern, raw] of Object.entries(overrides)) {
+        if (
+            pattern.trim().length === 0 ||
+            raw === null ||
+            typeof raw !== 'object' ||
+            Array.isArray(raw)
+        ) {
+            continue;
+        }
+        const entry = raw as Record<string, unknown>;
+        const override: ModelOverride = {
+            ...pick('contextWindow', positiveInteger(entry.contextWindow)),
+            ...pick('maxOutputTokens', positiveInteger(entry.maxOutputTokens)),
+            ...pick('temperature', temperature(entry.temperature)),
+            ...pick('reasoningEffort', reasoningEffort(entry.reasoningEffort)),
+        };
+        if (Object.keys(override).length > 0) {
+            result[pattern] = override;
+        }
+    }
+    return result;
+}
+
+/**
+ * Collapses every override whose pattern matches the id into one, in the order
+ * the settings object declares them, so a later, more specific entry can refine
+ * an earlier broad one field by field.
+ */
+export function overridesFor(
+    id: string,
+    overrides: Record<string, ModelOverride>
+): ModelOverride {
+    let merged: ModelOverride = {};
+    for (const [pattern, override] of Object.entries(overrides)) {
+        if (matchesPattern(id, pattern)) {
+            merged = { ...merged, ...override };
+        }
+    }
+    return merged;
+}
+
+function pick<K extends string, V>(
+    key: K,
+    value: V | undefined
+): Partial<Record<K, V>> {
+    return value === undefined ? {} : ({ [key]: value } as Record<K, V>);
+}
+
+function positiveInteger(value: unknown): number | undefined {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0
+        ? Math.floor(value)
+        : undefined;
+}
+
+/** The OpenAI protocol accepts 0 to 2; anything outside is a typo. */
+function temperature(value: unknown): number | undefined {
+    return typeof value === 'number' &&
+        Number.isFinite(value) &&
+        value >= 0 &&
+        value <= 2
+        ? value
+        : undefined;
+}
+
+function reasoningEffort(value: unknown): ReasoningEffort | undefined {
+    return typeof value === 'string' &&
+        (REASONING_EFFORTS as readonly string[]).includes(value)
+        ? (value as ReasoningEffort)
+        : undefined;
 }
 
 export async function setBaseUrl(baseUrl: string): Promise<void> {
