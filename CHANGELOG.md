@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
+
+Claude Code passthrough setup. One setting was added (`claudeCode.pickerModels`); no existing settings changed, and no action is needed on upgrade.
 
 ### Added
 
