@@ -106,6 +106,7 @@ describe('AgentRouterTreeProvider', () => {
         expect(items[4]?.command?.command).toBe(
             'tetrate-model-provider.setAnthropicKey'
         );
+        expect(items[4]?.contextValue).toBe('passthrough-off');
         expect(items[5]?.label).toBe('Providers');
         expect(items[6]?.label).toBe('Profiles');
         expect(items[6]?.contextValue).toBe('profiles');
@@ -122,6 +123,8 @@ describe('AgentRouterTreeProvider', () => {
         const keyed = makeProvider({ hasAnthropicKey: () => Promise.resolve(true) });
         const [, , , , on] = await keyed.getChildren({ kind: 'root', id: 'endpoint' });
         expect(keyed.getTreeItem(on!).description).toBe('on for Claude models');
+        expect(keyed.getTreeItem(on!).contextValue).toBe('passthrough-on-key');
+        expect(row.contextValue).toBe('passthrough-on');
     });
 
     it('marks a gateway that reports not serving', async () => {

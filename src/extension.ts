@@ -661,8 +661,27 @@ export function activate(context: vscode.ExtensionContext) {
         ),
 
         vscode.commands.registerCommand(
+            'tetrate-model-provider.enablePassthrough',
+            () => setPassthrough(true)
+        ),
+
+        vscode.commands.registerCommand(
+            'tetrate-model-provider.disablePassthrough',
+            () => setPassthrough(false)
+        ),
+
+        vscode.commands.registerCommand(
             'tetrate-model-provider.clearAnthropicKey',
             async () => {
+                const clear = 'Clear Key';
+                const choice = await vscode.window.showWarningMessage(
+                    `Remove the Anthropic API key stored for ${getConfig().baseUrl}? Claude models will use the Agent Router key, and passthrough needs the key entered again.`,
+                    { modal: true },
+                    clear
+                );
+                if (choice !== clear) {
+                    return;
+                }
                 await deleteAnthropicKey(context, getConfig().baseUrl);
                 provider.invalidate();
                 tree.refresh();
@@ -932,6 +951,22 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {}
+
+/**
+ * The Passthrough row's toggle. The configuration listener invalidates the
+ * provider and refreshes the tree, so writing the setting is all this does.
+ * The enable button is only offered once a key is stored; see package.json.
+ */
+async function setPassthrough(enabled: boolean): Promise<void> {
+    await vscode.workspace
+        .getConfiguration(CONFIG_SECTION)
+        .update('passthrough.enabled', enabled, vscode.ConfigurationTarget.Global);
+    if (!enabled) {
+        vscode.window.showInformationMessage(
+            'Passthrough is off. Claude models use the Agent Router key again; the Anthropic key stays stored.'
+        );
+    }
+}
 
 /**
  * Confirms the new endpoint. Keys are stored per host, so a freshly

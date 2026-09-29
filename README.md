@@ -212,6 +212,8 @@ Costs are estimates computed from the public catalog's current prices; the Agent
 | Tetrate Agent Router: Remove Endpoint Profile | Remove a stored endpoint profile. |
 | Tetrate Agent Router: Set Anthropic API Key for Passthrough | Store your own Anthropic API key for passthrough on the configured endpoint. |
 | Tetrate Agent Router: Clear Anthropic API Key | Remove the passthrough key; Claude models return to the Agent Router key. |
+| Tetrate Agent Router: Turn On Passthrough | Set `passthrough.enabled` to `true`. |
+| Tetrate Agent Router: Turn Off Passthrough | Set `passthrough.enabled` to `false`, keeping the stored key. |
 
 ## The Overview view
 
@@ -248,7 +250,7 @@ Passthrough takes two things: your Anthropic API key stored for the endpoint, an
 
 1. **Select the endpoint.** Choose the project's gateway with **Tetrate Agent Router: Switch Endpoint** or **Set Base URL**, and make sure an Agent Router API key is stored for it. The key and the setting below apply to that endpoint.
 1. **Store your Anthropic API key.** Open the **Tetrate Agent Router** view in the activity bar and click the **Passthrough** row under **Endpoint**. The same command, **Tetrate Agent Router: Set Anthropic API Key for Passthrough**, is also in the Command Palette and under **Setup** in the status bar menu. Paste your key into the password prompt. It must start with `sk-ant-api`; an empty value or a Claude subscription token (`sk-ant-oat…`) is rejected. The key is kept in VS Code secret storage, scoped to the endpoint host, like the Agent Router key.
-1. **Turn passthrough on.** When the key is saved, a notification offers **Enable Passthrough**; select it. Alternatively, open Settings, search for `passthrough`, and tick **Passthrough: Enabled**. The setting is only available in User settings, because it decides which account pays for Claude requests. If passthrough was already on, the notification offers **Test Connection** instead.
+1. **Turn passthrough on.** When the key is saved, a notification offers **Enable Passthrough**; select it. Later, the Passthrough row itself carries the switch: hover it or select it, and use the **Turn On Passthrough** (play) button. Alternatively, open Settings, search for `passthrough`, and tick **Passthrough: Enabled**. The setting is only available in User settings, because it decides which account pays for Claude requests. If passthrough was already on, the notification offers **Test Connection** instead.
 1. **Test it.** Run **Tetrate Agent Router: Test Connection** from the Command Palette or the status bar menu. With passthrough on, it sends a second one-token request through `/v1/messages` with both keys and reports, for example, *Passthrough answered via claude-opus-5 in 0.8s*.
 
 To replace the Anthropic key later, run the same command again; the new key overwrites the stored one.
@@ -262,6 +264,8 @@ The **Passthrough** row in the Overview view shows the current state:
 | `off` | The setting is off. Claude models use the Agent Router key. |
 | `on, but no Anthropic key is stored` (warning icon) | The setting is on, but no key is stored for this endpoint, so Claude models still use the Agent Router key. Click the row to store one. |
 | `on for Claude models` (check icon) | Claude requests go through passthrough. |
+
+The row's inline buttons follow the state. **Turn On Passthrough** (play) appears when passthrough is off and a key is stored, **Turn Off Passthrough** (stop) whenever passthrough is on, and **Clear Anthropic API Key** (trash) whenever a key is stored. With no key and passthrough off, clicking the row is the way in.
 
 Other places show it too:
 
@@ -278,8 +282,8 @@ Passthrough requests are counted with their tokens, but their cost is kept apart
 
 Either of these returns Claude models to the managed path with the Agent Router key immediately:
 
-- Untick **Passthrough: Enabled** in Settings. The Anthropic key stays stored, so ticking it again resumes passthrough.
-- Run **Tetrate Agent Router: Clear Anthropic API Key** from the Command Palette. This removes the key for the current endpoint; the Passthrough row then shows the warning state if the setting is still on.
+- Select **Turn Off Passthrough** (stop) on the Passthrough row, or untick **Passthrough: Enabled** in Settings. The Anthropic key stays stored, so turning passthrough on again resumes it.
+- Select **Clear Anthropic API Key** (trash) on the Passthrough row, or run the command from the Command Palette. After a confirmation, it removes the key for the current endpoint; the row then shows the warning state if passthrough is still on.
 
 ### Behaviour on the passthrough path
 

@@ -135,7 +135,18 @@
             },
             {
                 "command": "tetrate-model-provider.clearAnthropicKey",
-                "title": "Tetrate Agent Router: Clear Anthropic API Key"
+                "title": "Tetrate Agent Router: Clear Anthropic API Key",
+                "icon": "$(trash)"
+            },
+            {
+                "command": "tetrate-model-provider.enablePassthrough",
+                "title": "Tetrate Agent Router: Turn On Passthrough",
+                "icon": "$(debug-start)"
+            },
+            {
+                "command": "tetrate-model-provider.disablePassthrough",
+                "title": "Tetrate Agent Router: Turn Off Passthrough",
+                "icon": "$(debug-stop)"
             }
         ],
         "menus": {
@@ -166,6 +177,21 @@
                     "command": "tetrate-model-provider.addProfile",
                     "when": "view == tetrate-model-provider.overview && viewItem == profiles",
                     "group": "inline"
+                },
+                {
+                    "command": "tetrate-model-provider.enablePassthrough",
+                    "when": "view == tetrate-model-provider.overview && viewItem == passthrough-off-key",
+                    "group": "inline@1"
+                },
+                {
+                    "command": "tetrate-model-provider.disablePassthrough",
+                    "when": "view == tetrate-model-provider.overview && viewItem =~ /^passthrough-on/",
+                    "group": "inline@1"
+                },
+                {
+                    "command": "tetrate-model-provider.clearAnthropicKey",
+                    "when": "view == tetrate-model-provider.overview && viewItem =~ /^passthrough-.*-key$/",
+                    "group": "inline@2"
                 },
                 {
                     "command": "tetrate-model-provider.copyRequestId",
