@@ -4,6 +4,8 @@
  *
  *   node runner.cjs suite-smoke.cjs
  *   TARS_E2E_KEY=sk-... EXT_DEV_PATH=/tmp/tars-ext node runner.cjs suite-request.cjs
+ *   TARS_E2E_KEY=sk-... TARS_E2E_ANTHROPIC_KEY=sk-ant-... EXT_DEV_PATH=/tmp/tars-ext \
+ *       node runner.cjs suite-passthrough.cjs
  *
  * EXT_DEV_PATH defaults to the repo root; the request suite needs the
  * env-key temp copy described in SKILL.md.
@@ -30,9 +32,11 @@ if (!suite) {
             '/Applications/Visual Studio Code.app/Contents/MacOS/Code',
         extensionDevelopmentPath: process.env.EXT_DEV_PATH || REPO,
         extensionTestsPath: path.resolve(__dirname, suite),
-        ...(process.env.TARS_E2E_KEY
-            ? { extensionTestsEnv: { TARS_E2E_KEY: process.env.TARS_E2E_KEY } }
-            : {}),
+        extensionTestsEnv: Object.fromEntries(
+            ['TARS_E2E_KEY', 'TARS_E2E_ANTHROPIC_KEY']
+                .filter((name) => process.env[name])
+                .map((name) => [name, process.env[name]])
+        ),
         launchArgs: [
             // Both dirs are required: without them the launch is forwarded
             // to the running VS Code instance and exits immediately.

@@ -234,6 +234,20 @@ describe('routing analytics', () => {
     });
 });
 
+describe('passthrough rows', () => {
+    it('names an unpriced passthrough model as unknown in the dashboard data path', async () => {
+        const history = new UsageHistory(makeStore());
+        await history.record('claude', usage, undefined, NOON, true);
+        const row = dashboardData(history, new UsageTracker(), NOON).breakdowns[7]?.[0];
+        expect(row).toMatchObject({ passthroughRequests: 1, passthroughUnpricedRequests: 1 });
+        const html = renderUsageDashboard(
+            dashboardData(history, new UsageTracker(), NOON),
+            'N'
+        );
+        expect(html).toContain("'unknown passthrough'");
+    });
+});
+
 describe('renderUsageDashboard', () => {
     it('embeds the data and the nonce the CSP requires', async () => {
         const history = new UsageHistory(makeStore());

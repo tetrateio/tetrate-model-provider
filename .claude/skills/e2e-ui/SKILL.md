@@ -54,6 +54,26 @@ points `baseUrl` at it via the configuration API, discovers the mock model
 over the wire, and sends a request through `vscode.lm.sendRequest`. The
 repo itself is never modified.
 
+## Passthrough suite
+
+Uses the same temporary copy, with a second env fallback for the Anthropic
+key:
+
+```bash
+sed -i '' 's|async function getAnthropicKey(context, baseUrl) {|async function getAnthropicKey(context, baseUrl) { if (process.env.TARS_E2E_ANTHROPIC_KEY) return process.env.TARS_E2E_ANTHROPIC_KEY;|' /tmp/tars-ext/out/extension.js
+grep -c TARS_E2E /tmp/tars-ext/out/extension.js   # must print 2
+
+TARS_E2E_KEY=sk-e2e-tars TARS_E2E_ANTHROPIC_KEY=sk-ant-api03-e2e \
+    EXT_DEV_PATH=/tmp/tars-ext \
+    node .claude/skills/e2e-ui/runner.cjs suite-passthrough.cjs
+```
+
+The mock gateway serves `/v1/models`, `/v1/messages`, and
+`/v1/chat/completions`. The suite enables passthrough, sends a Claude and a
+non-Claude request, and asserts each took its route with its credentials:
+`x-api-key` and `x-tars-api-key` with no `Authorization` on the Messages
+call, and only the bearer on the chat-completions call.
+
 ## Read the screenshots
 
 `/tmp/tars-e2e/*.png` — always LOOK at them (Read tool); the assertions

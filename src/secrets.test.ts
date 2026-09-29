@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import type * as vscode from 'vscode';
 
 import {
+    anthropicKeySecretName,
     API_KEY_SECRET,
+    getAnthropicKey,
+    isSubscriptionToken,
+    validateAnthropicKey,
     apiKeySecretName,
     deleteApiKey,
     getApiKey,
@@ -89,6 +93,31 @@ describe('getApiKey', () => {
             [apiKeySecretName(HOSTED)]: '   ',
         });
         await expect(getApiKey(context, HOSTED)).resolves.toBeUndefined();
+    });
+});
+
+describe('Anthropic passthrough key', () => {
+    it('is stored apart from the Agent Router key, per host', async () => {
+        const { context } = fakeContext({
+            [anthropicKeySecretName(HOSTED)]: ' sk-ant-api03-x ',
+        });
+        await storeApiKey(context, HOSTED, 'sk-hosted');
+
+        await expect(getAnthropicKey(context, HOSTED)).resolves.toBe(
+            'sk-ant-api03-x'
+        );
+        await expect(getAnthropicKey(context, SELF_HOSTED)).resolves.toBeUndefined();
+        expect(anthropicKeySecretName(HOSTED)).not.toBe(apiKeySecretName(HOSTED));
+    });
+
+    it('refuses a Claude subscription token', () => {
+        expect(isSubscriptionToken('sk-ant-oat01-abc')).toBe(true);
+        expect(isSubscriptionToken('sk-ant-api03-abc')).toBe(false);
+        expect(validateAnthropicKey('sk-ant-oat01-abc')).toContain(
+            'subscription token'
+        );
+        expect(validateAnthropicKey('  ')).toContain('must not be empty');
+        expect(validateAnthropicKey('sk-ant-api03-abc')).toBeUndefined();
     });
 });
 

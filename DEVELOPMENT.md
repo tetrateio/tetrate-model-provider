@@ -9,6 +9,8 @@ src/
 ├── catalog.ts          Model fetching, catalog join, LanguageModelChatInformation mapping
 ├── catalogCache.ts     Day-long persistence of the public catalog in globalState
 ├── messages.ts         VS Code chat parts ↔ OpenAI chat-completion messages
+├── anthropicMessages.ts VS Code chat parts ↔ Anthropic Messages, for passthrough
+├── anthropicStream.ts  Anthropic Messages stream events → text, tool calls, usage
 ├── tokenCount.ts       Local token estimation
 ├── config.ts           Settings access, base URL normalization, glob matching
 ├── secrets.ts          API key storage and prompting

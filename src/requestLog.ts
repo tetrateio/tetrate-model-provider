@@ -33,6 +33,8 @@ export type RequestRecord = {
     requestId?: string;
     /** The backend that answered, when it differs from the requested model. */
     servedBy?: string;
+    /** Sent in passthrough mode; `cost` is then an Anthropic-billed estimate. */
+    passthrough?: boolean;
 };
 
 export class RequestLog {

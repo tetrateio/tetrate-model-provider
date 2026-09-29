@@ -4,6 +4,7 @@ import {
     DEFAULT_BASE_URL,
     isIncludedByFilter,
     matchesPattern,
+    messagesBaseUrl,
     normalizeBaseUrl,
     overridesFor,
     sanitizeHeaders,
@@ -37,6 +38,17 @@ describe('normalizeBaseUrl', () => {
     it('leaves an explicit version segment alone', () => {
         expect(normalizeBaseUrl('https://gateway.internal/v2')).toBe(
             'https://gateway.internal/v2'
+        );
+    });
+});
+
+describe('messagesBaseUrl', () => {
+    it('drops the version segment Anthropic clients append themselves', () => {
+        expect(messagesBaseUrl('https://router.tare-acme.tetrate.ai/v1')).toBe(
+            'https://router.tare-acme.tetrate.ai'
+        );
+        expect(messagesBaseUrl('http://localhost:8080/proxy/v1')).toBe(
+            'http://localhost:8080/proxy'
         );
     });
 });
@@ -202,6 +214,16 @@ describe('sanitizeHeaders', () => {
         expect(sanitizeHeaders({ 'X-Tenant-Id': 'team-platform' })).toEqual({
             'X-Tenant-Id': 'team-platform',
         });
+    });
+
+    it('drops the other credential headers too', () => {
+        expect(
+            sanitizeHeaders({
+                'X-Api-Key': 'sk-ant-attacker',
+                'x-tars-api-key': 'sk-attacker',
+                'X-Tenant-Id': 'team-platform',
+            })
+        ).toEqual({ 'X-Tenant-Id': 'team-platform' });
     });
 
     it('drops Authorization whatever its casing or padding', () => {

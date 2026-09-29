@@ -47,7 +47,7 @@ describe('UsageHistory', () => {
         const second = new UsageHistory(store);
         await second.record('b', usage({ inputTokens: 10 }), undefined, NOON);
 
-        expect(second.today(NOON)).toEqual({ cost: 0.75, requests: 3 });
+        expect(second.today(NOON)).toEqual({ cost: 0.75, requests: 3, passthroughCost: 0 });
     });
 
     it('keeps days apart and windows over them', async () => {
@@ -56,9 +56,9 @@ describe('UsageHistory', () => {
         await history.record('a', usage(), 2, NOON - 3 * DAY);
         await history.record('a', usage(), 4, NOON);
 
-        expect(history.today(NOON)).toEqual({ cost: 4, requests: 1 });
-        expect(history.window(7, NOON)).toEqual({ cost: 6, requests: 2 });
-        expect(history.window(30, NOON)).toEqual({ cost: 7, requests: 3 });
+        expect(history.today(NOON)).toEqual({ cost: 4, requests: 1, passthroughCost: 0 });
+        expect(history.window(7, NOON)).toEqual({ cost: 6, requests: 2, passthroughCost: 0 });
+        expect(history.window(30, NOON)).toEqual({ cost: 7, requests: 3, passthroughCost: 0 });
     });
 
     it('prunes days past the retention window on write', async () => {
@@ -86,7 +86,7 @@ describe('UsageHistory', () => {
             { days: [1, 2] },
         ]) {
             const history = new UsageHistory(makeStore(broken));
-            expect(history.today(NOON)).toEqual({ cost: 0, requests: 0 });
+            expect(history.today(NOON)).toEqual({ cost: 0, requests: 0, passthroughCost: 0 });
         }
     });
 
@@ -139,7 +139,28 @@ describe('UsageHistory', () => {
         });
 
         await history.record('a', usage(), 1, NOON);
-        expect(history.today(NOON)).toEqual({ cost: 1, requests: 1 });
+        expect(history.today(NOON)).toEqual({ cost: 1, requests: 1, passthroughCost: 0 });
+    });
+});
+
+describe('passthrough history', () => {
+    it('counts passthrough requests but keeps their cost out of spend', async () => {
+        const history = new UsageHistory(makeStore());
+        await history.record('claude', usage(), 3, NOON, true);
+        await history.record('gpt', usage(), 1, NOON);
+
+        expect(history.today(NOON)).toEqual({
+            cost: 1,
+            requests: 2,
+            passthroughCost: 3,
+        });
+        expect(history.breakdown(7, NOON)[0]).toMatchObject({
+            modelId: 'gpt',
+            cost: 1,
+        });
+        expect(
+            history.breakdown(7, NOON).find((row) => row.modelId === 'claude')
+        ).toMatchObject({ cost: 0, passthroughCost: 3, passthroughRequests: 1 });
     });
 });
 

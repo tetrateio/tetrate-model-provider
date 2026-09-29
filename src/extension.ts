@@ -12,6 +12,7 @@ import {
     CONFIG_SECTION,
     DEFAULT_BASE_URL,
     getConfig,
+    messagesBaseUrl,
     normalizeBaseUrl,
     setBaseUrl,
     VENDOR,
@@ -24,19 +25,23 @@ import {
     type ProviderReport,
 } from './health';
 import { pickModels } from './modelPicker';
-import { probeCompletion } from './onboarding';
+import { probeCompletion, probePassthrough } from './onboarding';
 import {
     addProfileFlow,
     profileNameOf,
     removeProfileFlow,
 } from './profileCommands';
-import { TetrateChatModelProvider } from './provider';
+import { isAnthropicModel, TetrateChatModelProvider } from './provider';
 import { RequestLog } from './requestLog';
 import { REQUESTS_VIEW_ID, RequestsTreeProvider } from './requestsView';
 import {
+    ANTHROPIC_KEY_SECRET,
     API_KEY_SECRET,
+    deleteAnthropicKey,
     deleteApiKey,
+    getAnthropicKey,
     getApiKey,
+    promptForAnthropicKey,
     promptForApiKey,
 } from './secrets';
 import { AgentRouterTreeProvider, type TreeNode } from './treeView';
@@ -243,6 +248,8 @@ export function activate(context: vscode.ExtensionContext) {
                 : undefined;
         },
         latencyOf: (modelId) => provider.usage.firstOutputStats(modelId),
+        hasAnthropicKey: async (baseUrl) =>
+            Boolean(await getAnthropicKey(context, baseUrl)),
         session: provider.usage,
         history,
     });
@@ -342,9 +349,16 @@ export function activate(context: vscode.ExtensionContext) {
                 ...(event.meta?.servedBy
                     ? { servedBy: event.meta.servedBy }
                     : {}),
+                ...(event.meta?.passthrough ? { passthrough: true } : {}),
             });
             void history
-                .record(event.modelId, event.usage, event.cost)
+                .record(
+                    event.modelId,
+                    event.usage,
+                    event.cost,
+                    Date.now(),
+                    event.meta?.passthrough === true
+                )
                 .then(() => {
                     updateUsageBar();
                     dashboard.update();
@@ -606,6 +620,78 @@ export function activate(context: vscode.ExtensionContext) {
         ),
 
         vscode.commands.registerCommand(
+            'tetrate-model-provider.setAnthropicKey',
+            async () => {
+                const config = getConfig();
+                const key = await promptForAnthropicKey(context, config.baseUrl);
+                if (!key) {
+                    return;
+                }
+                provider.invalidate();
+                tree.refresh();
+                if (config.passthroughEnabled) {
+                    const test = 'Test Connection';
+                    const action = await vscode.window.showInformationMessage(
+                        'Anthropic API key saved. Claude models now use passthrough on this endpoint.',
+                        test
+                    );
+                    if (action === test) {
+                        await vscode.commands.executeCommand(
+                            'tetrate-model-provider.testConnection'
+                        );
+                    }
+                    return;
+                }
+                // The key alone changes nothing; say so and offer the switch.
+                const enable = 'Enable Passthrough';
+                const action = await vscode.window.showInformationMessage(
+                    'Anthropic API key saved. Passthrough is off, so Claude models still use the Agent Router key.',
+                    enable
+                );
+                if (action === enable) {
+                    await vscode.workspace
+                        .getConfiguration(CONFIG_SECTION)
+                        .update(
+                            'passthrough.enabled',
+                            true,
+                            vscode.ConfigurationTarget.Global
+                        );
+                }
+            }
+        ),
+
+        vscode.commands.registerCommand(
+            'tetrate-model-provider.enablePassthrough',
+            () => setPassthrough(true)
+        ),
+
+        vscode.commands.registerCommand(
+            'tetrate-model-provider.disablePassthrough',
+            () => setPassthrough(false)
+        ),
+
+        vscode.commands.registerCommand(
+            'tetrate-model-provider.clearAnthropicKey',
+            async () => {
+                const clear = 'Clear Key';
+                const choice = await vscode.window.showWarningMessage(
+                    `Remove the Anthropic API key stored for ${getConfig().baseUrl}? Claude models will use the Agent Router key, and passthrough needs the key entered again.`,
+                    { modal: true },
+                    clear
+                );
+                if (choice !== clear) {
+                    return;
+                }
+                await deleteAnthropicKey(context, getConfig().baseUrl);
+                provider.invalidate();
+                tree.refresh();
+                vscode.window.showInformationMessage(
+                    'Anthropic API key removed. Claude models use the Agent Router key again.'
+                );
+            }
+        ),
+
+        vscode.commands.registerCommand(
             'tetrate-model-provider.copyRequestId',
             async (record?: { requestId?: string }) => {
                 if (!record?.requestId) {
@@ -659,6 +745,48 @@ export function activate(context: vscode.ExtensionContext) {
                         });
                     }
                 );
+                // Passthrough takes a different route with a different
+                // credential, so it gets its own round trip.
+                const anthropicKey = config.passthroughEnabled
+                    ? await getAnthropicKey(context, config.baseUrl)
+                    : undefined;
+                if (anthropicKey) {
+                    const claude = (await listAllModels()).find(
+                        isAnthropicModel
+                    );
+                    const passthrough = claude
+                        ? await vscode.window.withProgress(
+                              {
+                                  location:
+                                      vscode.ProgressLocation.Notification,
+                                  title: 'Testing passthrough…',
+                              },
+                              () =>
+                                  probePassthrough({
+                                      messagesBaseUrl: messagesBaseUrl(
+                                          config.baseUrl
+                                      ),
+                                      apiKey,
+                                      anthropicKey,
+                                      headers: config.requestHeaders,
+                                      modelId: claude.id,
+                                  })
+                          )
+                        : {
+                              ok: false as const,
+                              message:
+                                  'No Claude model is reachable with this key.',
+                          };
+                    if (passthrough.ok) {
+                        vscode.window.showInformationMessage(
+                            `Passthrough answered via ${passthrough.modelId} in ${(passthrough.ms / 1000).toFixed(1)}s. Check Request Logs for the passthrough label.`
+                        );
+                    } else {
+                        vscode.window.showWarningMessage(
+                            `Passthrough test request failed: ${passthrough.message}`
+                        );
+                    }
+                }
                 if (result.ok) {
                     vscode.window.showInformationMessage(
                         `Agent Router answered via ${result.modelId} in ${(result.ms / 1000).toFixed(1)}s. The endpoint and key work end to end.`
@@ -740,6 +868,9 @@ export function activate(context: vscode.ExtensionContext) {
                         buildStatusReport({
                             gateway: await gatewayStatus(),
                             providerReport: await providerReport(),
+                            anthropicKeyStored: Boolean(
+                                await getAnthropicKey(context, config.baseUrl)
+                            ),
                             version: String(
                                 context.extension.packageJSON.version
                             ),
@@ -808,14 +939,34 @@ export function activate(context: vscode.ExtensionContext) {
         // stale model list. The event covers every secret this extension owns;
         // the prefix matches the per-host names and the legacy unscoped one.
         context.secrets.onDidChange((event) => {
-            if (event.key.startsWith(API_KEY_SECRET)) {
+            if (
+                event.key.startsWith(API_KEY_SECRET) ||
+                event.key.startsWith(ANTHROPIC_KEY_SECRET)
+            ) {
                 provider.invalidate();
+                tree.refresh();
             }
         })
     );
 }
 
 export function deactivate() {}
+
+/**
+ * The Passthrough row's toggle. The configuration listener invalidates the
+ * provider and refreshes the tree, so writing the setting is all this does.
+ * The enable button is only offered once a key is stored; see package.json.
+ */
+async function setPassthrough(enabled: boolean): Promise<void> {
+    await vscode.workspace
+        .getConfiguration(CONFIG_SECTION)
+        .update('passthrough.enabled', enabled, vscode.ConfigurationTarget.Global);
+    if (!enabled) {
+        vscode.window.showInformationMessage(
+            'Passthrough is off. Claude models use the Agent Router key again; the Anthropic key stays stored.'
+        );
+    }
+}
 
 /**
  * Confirms the new endpoint. Keys are stored per host, so a freshly

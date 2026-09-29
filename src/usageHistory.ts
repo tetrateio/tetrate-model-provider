@@ -25,8 +25,16 @@ export const USAGE_RETENTION_DAYS = 62;
 
 export type StoredTotals = RequestUsage & {
     requests: number;
+    /** Billed through Agent Router; passthrough is kept apart below. */
     cost: number;
     unpricedRequests: number;
+    /**
+     * API-rate estimate of passthrough requests, billed by Anthropic. Optional
+     * because history written before passthrough existed lacks it.
+     */
+    passthroughCost?: number;
+    passthroughRequests?: number;
+    passthroughUnpricedRequests?: number;
 };
 
 /** One day's aggregate across every model, for the dashboard chart. */
@@ -59,7 +67,8 @@ export class UsageHistory {
         modelId: string,
         usage: RequestUsage,
         cost: number | undefined,
-        now: number = Date.now()
+        now: number = Date.now(),
+        passthrough = false
     ): Promise<void> {
         const day = dayKeyOf(now);
         const models = (this.history.days[day] ??= {});
@@ -77,8 +86,16 @@ export class UsageHistory {
         totals.cachedInputTokens += usage.cachedInputTokens;
         totals.outputTokens += usage.outputTokens;
         totals.reasoningTokens += usage.reasoningTokens;
-        totals.cost += cost ?? 0;
-        totals.unpricedRequests += cost === undefined ? 1 : 0;
+        if (passthrough) {
+            totals.passthroughRequests = (totals.passthroughRequests ?? 0) + 1;
+            totals.passthroughCost = (totals.passthroughCost ?? 0) + (cost ?? 0);
+            totals.passthroughUnpricedRequests =
+                (totals.passthroughUnpricedRequests ?? 0) +
+                (cost === undefined ? 1 : 0);
+        } else {
+            totals.cost += cost ?? 0;
+            totals.unpricedRequests += cost === undefined ? 1 : 0;
+        }
 
         this.prune(now);
         try {
@@ -88,8 +105,15 @@ export class UsageHistory {
         }
     }
 
-    /** Cost and request count booked under today. */
-    today(now: number = Date.now()): { cost: number; requests: number } {
+    /**
+     * Agent Router cost and request count booked under today. Passthrough
+     * requests count as requests; their cost is reported separately.
+     */
+    today(now: number = Date.now()): {
+        cost: number;
+        requests: number;
+        passthroughCost: number;
+    } {
         return this.window(1, now);
     }
 
@@ -97,16 +121,18 @@ export class UsageHistory {
     window(
         days: number,
         now: number = Date.now()
-    ): { cost: number; requests: number } {
+    ): { cost: number; requests: number; passthroughCost: number } {
         let cost = 0;
         let requests = 0;
+        let passthroughCost = 0;
         for (const day of lastDays(days, now)) {
             for (const totals of Object.values(this.history.days[day] ?? {})) {
                 cost += totals.cost;
                 requests += totals.requests;
+                passthroughCost += totals.passthroughCost ?? 0;
             }
         }
-        return { cost, requests };
+        return { cost, requests, passthroughCost };
     }
 
     /**
@@ -152,6 +178,9 @@ export class UsageHistory {
                     reasoningTokens: 0,
                     cost: 0,
                     unpricedRequests: 0,
+                    passthroughCost: 0,
+                    passthroughRequests: 0,
+                    passthroughUnpricedRequests: 0,
                 };
                 row.requests += totals.requests;
                 row.inputTokens += totals.inputTokens;
@@ -160,6 +189,14 @@ export class UsageHistory {
                 row.reasoningTokens += totals.reasoningTokens;
                 row.cost += totals.cost;
                 row.unpricedRequests += totals.unpricedRequests;
+                row.passthroughCost =
+                    (row.passthroughCost ?? 0) + (totals.passthroughCost ?? 0);
+                row.passthroughRequests =
+                    (row.passthroughRequests ?? 0) +
+                    (totals.passthroughRequests ?? 0);
+                row.passthroughUnpricedRequests =
+                    (row.passthroughUnpricedRequests ?? 0) +
+                    (totals.passthroughUnpricedRequests ?? 0);
                 byModel.set(modelId, row);
             }
         }

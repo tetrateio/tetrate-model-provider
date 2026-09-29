@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { PROBE_TIMEOUT_MS, probeCompletion } from './onboarding';
+import {
+    PROBE_TIMEOUT_MS,
+    probeCompletion,
+    probePassthrough,
+} from './onboarding';
 
 const options = {
     baseUrl: 'https://x/v1',
@@ -70,6 +74,39 @@ describe('probeCompletion', () => {
             messages: [{ role: 'user', content: 'ping' }],
             max_tokens: 1,
             stream: false,
+        });
+    });
+
+    it('sends a passthrough probe with each credential in its own header', async () => {
+        const fetchMock = vi.fn(() =>
+            Promise.resolve(new Response('{}', { status: 200 }))
+        );
+        vi.stubGlobal('fetch', fetchMock);
+
+        await probePassthrough({
+            messagesBaseUrl: 'https://x',
+            apiKey: 'sk-tars',
+            anthropicKey: 'sk-ant-api03-own',
+            headers: { 'X-Tenant-Id': 'team' },
+            modelId: 'claude-opus-5',
+        });
+
+        const [url, init] = fetchMock.mock.calls[0] as unknown as [
+            string,
+            RequestInit,
+        ];
+        expect(url).toBe('https://x/v1/messages');
+        expect(init.headers).toMatchObject({
+            'x-api-key': 'sk-ant-api03-own',
+            'x-tars-api-key': 'sk-tars',
+            'anthropic-version': '2023-06-01',
+            'X-Tenant-Id': 'team',
+        });
+        expect(init.headers).not.toHaveProperty('Authorization');
+        expect(JSON.parse(init.body as string)).toEqual({
+            model: 'claude-opus-5',
+            max_tokens: 1,
+            messages: [{ role: 'user', content: 'ping' }],
         });
     });
 

@@ -66,6 +66,10 @@ export function buildCommandCenterItems(
             label: '$(pulse) Connection status',
             commandId: `${COMMAND_PREFIX}showStatus`,
         },
+        {
+            label: '$(arrow-swap) Set Anthropic key for passthrough',
+            commandId: `${COMMAND_PREFIX}setAnthropicKey`,
+        },
     ];
 }
 

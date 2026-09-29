@@ -28,6 +28,8 @@ export type TreeNode =
           tooltip?: string;
           icon?: string;
           command?: string;
+          /** Gates inline actions in package.json's view/item/context menu. */
+          contextValue?: string;
       }
     | { kind: 'profiles' }
     | { kind: 'profile'; name: string; url: string }
@@ -59,6 +61,8 @@ export type TreeDeps = {
     gatewayStatus(): Promise<GatewayStatus>;
     /** Per-provider health from /v1/status; undefined when not served. */
     providerReport(): Promise<ProviderReport | undefined>;
+    /** Whether an Anthropic passthrough key is stored for the endpoint. */
+    hasAnthropicKey(baseUrl: string): Promise<boolean>;
     session: UsageTracker;
     history: UsageHistory;
 };
@@ -263,6 +267,7 @@ export class AgentRouterTreeProvider
         );
         item.description = node.description;
         item.tooltip = node.tooltip;
+        item.contextValue = node.contextValue;
         if (node.icon) {
             item.iconPath = new vscode.ThemeIcon(node.icon);
         }
@@ -334,7 +339,14 @@ export class AgentRouterTreeProvider
             ([, url]) => url === config.baseUrl
         )?.[0];
         const catalog = this.deps.catalogInfo();
-        const gateway = await this.deps.gatewayStatus();
+        const [gateway, anthropicKey] = await Promise.all([
+            this.deps.gatewayStatus(),
+            this.deps.hasAnthropicKey(config.baseUrl),
+        ]);
+        const passthrough = describePassthrough(
+            config.passthroughEnabled,
+            anthropicKey
+        );
         return [
             {
                 kind: 'leaf',
@@ -370,6 +382,19 @@ export class AgentRouterTreeProvider
                 tooltip: 'Click to refresh the model list and catalog.',
                 icon: 'database',
                 command: 'tetrate-model-provider.refreshModels',
+            },
+            {
+                kind: 'leaf',
+                label: 'Passthrough',
+                description: passthrough.description,
+                tooltip:
+                    'Passthrough sends Claude models with your own Anthropic API key, billed by Anthropic, while Agent Router routes and logs them. Click to set the key.',
+                icon: passthrough.icon,
+                command: 'tetrate-model-provider.setAnthropicKey',
+                contextValue: passthroughContext(
+                    config.passthroughEnabled,
+                    anthropicKey
+                ),
             },
             { kind: 'providerHealth' },
             { kind: 'profiles' },
@@ -472,6 +497,34 @@ export class AgentRouterTreeProvider
             },
         ];
     }
+}
+
+/** The Passthrough row's phrase and icon; shared with the status report. */
+export function describePassthrough(
+    enabled: boolean,
+    hasAnthropicKey: boolean
+): { description: string; icon: string } {
+    if (!enabled) {
+        return { description: 'off', icon: 'circle-outline' };
+    }
+    return hasAnthropicKey
+        ? { description: 'on for Claude models', icon: 'check' }
+        : {
+              description: 'on, but no Anthropic key is stored',
+              icon: 'warning',
+          };
+}
+
+/**
+ * The Passthrough row's context value. It encodes both halves of the state
+ * so package.json can show the matching toggle (enable or disable) and offer
+ * the clear-key action only when a key is stored.
+ */
+export function passthroughContext(
+    enabled: boolean,
+    hasAnthropicKey: boolean
+): string {
+    return `passthrough-${enabled ? 'on' : 'off'}${hasAnthropicKey ? '-key' : ''}`;
 }
 
 /** One decimal reads naturally for sub-10s latencies, e.g. `0.8s`. */

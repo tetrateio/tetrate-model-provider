@@ -17,6 +17,11 @@ export type ProviderConfig = {
     spendWarning: number;
     /** Send a per-window agent-session-id header for trace attribution. */
     sessionAttribution: boolean;
+    /**
+     * Send Anthropic models' requests in passthrough mode, authenticated
+     * upstream with the user's own Anthropic API key; see provider.ts.
+     */
+    passthroughEnabled: boolean;
 };
 
 /** Effort levels the OpenAI protocol accepts for `reasoning_effort`. */
@@ -57,6 +62,7 @@ export function getConfig(): ProviderConfig {
         ),
         spendWarning: sanitizeSpendWarning(config.get('spendWarning')),
         sessionAttribution: config.get('sessionAttribution') === true,
+        passthroughEnabled: config.get('passthrough.enabled') === true,
     };
 }
 
@@ -87,11 +93,17 @@ function sanitizeSpendWarning(value: unknown): number {
 }
 
 /**
- * `Authorization` is always derived from the key in secret storage. Letting a
- * settings value replace it would send a different credential, or none at all,
- * with nothing in the UI to show that it happened.
+ * Credential headers are always derived from the keys in secret storage:
+ * `Authorization` and `x-tars-api-key` carry the Agent Router key, `x-api-key`
+ * the Anthropic key in passthrough. Letting a settings value replace one would
+ * send a different credential, or none at all, with nothing in the UI to show
+ * that it happened.
  */
-const RESERVED_HEADERS = new Set(['authorization']);
+const RESERVED_HEADERS = new Set([
+    'authorization',
+    'x-api-key',
+    'x-tars-api-key',
+]);
 
 export function sanitizeHeaders(
     headers: Record<string, string>
@@ -125,6 +137,15 @@ export function normalizeBaseUrl(value: string | undefined): string {
         return withoutTrailingSlashes;
     }
     return `${withoutTrailingSlashes}/v1`;
+}
+
+/**
+ * The base URL for Anthropic Messages clients, which append `/v1/messages`
+ * themselves: the configured URL without its trailing version segment. A path
+ * prefix before the segment is kept.
+ */
+export function messagesBaseUrl(baseUrl: string): string {
+    return baseUrl.replace(/\/+$/, '').replace(/\/v\d+$/, '');
 }
 
 /**
