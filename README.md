@@ -238,24 +238,100 @@ The extension registers a `@tetrate` participant in the chat view for operationa
 
 ## Claude Code passthrough
 
-In [passthrough mode](https://docs.tetrate.ai/agent-router-service/guides/coding-agents/claude-code/connect/), Claude Code signs in with the developer's own Claude Max, Pro, or Team subscription, which Anthropic bills directly, while its traffic still routes through the Agent Router and appears in the Console's Request Logs labelled `passthrough`. It is an Enterprise feature, and an administrator has to [enable it for the project](https://docs.tetrate.ai/agent-router-enterprise/guides/operate-and-govern/manage-models-and-providers/enable-passthrough-for-claude-code/) first.
+In [passthrough mode](https://docs.tetrate.ai/agent-router-service/guides/coding-agents/claude-code/connect/), [Claude Code](https://code.claude.com/docs/en/setup) signs in with your own Claude Max, Pro, or Team subscription, and Anthropic bills that subscription directly. The traffic still routes through the Agent Router, which records it in the Console's Request Logs with the label `passthrough` and adds no margin to the tokens.
 
-**Tetrate Agent Router: Configure Claude Code for Passthrough** sets Claude Code up from the endpoint and key this extension already holds, the same way `tare integrate claude-code --passthrough` does. After a confirmation, it:
+The extension configures Claude Code from the endpoint and API key it already holds, the same way `tare integrate claude-code --passthrough` does. It never handles the Claude sign-in itself.
 
-1. Checks the key against the endpoint, and changes nothing if it is rejected.
-2. Writes the `env` block of Claude Code's user settings, `~/.claude/settings.json` (or the `CLAUDE_CONFIG_DIR` equivalent): `ANTHROPIC_BASE_URL` is the endpoint without its `/v1`, and `ANTHROPIC_CUSTOM_HEADERS` gains an `x-tars-api-key` line. Other headers and settings are kept. `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are removed from the block, because either would replace the subscription sign-in.
-3. Writes Claude Code's model picker cache and enables gateway model discovery, since passthrough gives Claude Code no credential to list gateway models itself. By default only Anthropic models are listed, as other models route on Agent Router's credentials; `claudeCode.pickerModels` changes that. The cache format is internal to Claude Code and may change in any release.
-4. Offers to run `claude /login` in a terminal.
+### Before you begin
 
-The previous settings file is saved alongside as `settings.json.bak-<timestamp>`, and the file is written with owner-only permissions. When the Agent Router key is replaced, the extension offers to update Claude Code's copy; when it is cleared, it offers to remove it. **Remove Claude Code Configuration** takes out exactly what was written and keeps any value edited by hand since. The Overview view shows the current state on a **Claude Code** row.
+| Requirement | Detail |
+| --- | --- |
+| Agent Router Enterprise | Passthrough is an Enterprise data-plane feature. The hosted endpoint may not offer it. |
+| Administrator setup | The project needs an Anthropic provider with authentication type **API key**, and the Claude models you use must be enabled and assigned to the project. See [Enable passthrough for Claude Code](https://docs.tetrate.ai/agent-router-enterprise/guides/operate-and-govern/manage-models-and-providers/enable-passthrough-for-claude-code/). |
+| Claude subscription | Max, Pro, or Team. Organization-managed Claude Enterprise plans are untested. |
+| Claude Code | v2.1.227 or newer, installed and on the `PATH`. Older versions ignore the custom header that carries the Agent Router key. |
+| This extension | An API key stored for the endpoint the project's gateway serves; see [Quick start](#quick-start). |
 
-Some limits are deliberate:
+### Configure Claude Code
 
-- **The extension never touches the Claude sign-in.** Anthropic requires the subscription sign-in to complete through its own flow, and does not allow third-party tools to collect or forward it. Passthrough traffic therefore comes from Claude Code itself.
-- **Models used from VS Code chat or other extensions are not passed through.** They keep using the Agent Router key and are billed to the Agent Router account.
-- **The key is stored in plain text in Claude Code's settings file**, because that file is the only place Claude Code reads custom headers from.
-- **An `ANTHROPIC_API_KEY` exported in the shell still overrides the subscription.** The extension cannot see the shell environment, so unset it there.
-- **In a remote window, the local machine's Claude Code is configured**, since the extension runs locally.
+1. Select the gateway endpoint for the project, with **Tetrate Agent Router: Switch Endpoint** or **Set Base URL**, and confirm that an API key is stored for it.
+1. Run **Tetrate Agent Router: Configure Claude Code for Passthrough** from the Command Palette, from the **Claude Code** row in the Overview view, or from the status bar menu.
+1. Read the confirmation and select **Configure**. The extension checks the key against the endpoint first, and changes nothing if the key is rejected.
+1. Select **Sign In to Claude** in the notification that follows. This opens a terminal running `claude /login`, which is Anthropic's own sign-in flow. Skip this step if Claude Code is already signed in to your subscription.
+1. Make sure `ANTHROPIC_API_KEY` is not exported in your shell profile. When it is set, Claude Code uses that key instead of the subscription, and the extension cannot change the shell environment.
+1. Start a new Claude Code session.
+
+### Verify the setup
+
+1. In Claude Code, run `/status` and check that it reports `Anthropic base URL:` followed by the endpoint without its `/v1`, for example `https://router.tare-acme.tetrate.ai`.
+1. Send one prompt.
+1. In the Console, open **Request Logs** and look for the request with the `passthrough` label and the serving model.
+
+In VS Code, the **Claude Code** row in the Overview view reads `passthrough via this endpoint` once the settings match the configured endpoint and key. **Show Connection Status** reports the same line.
+
+### Choose which models appear in `/model`
+
+In passthrough mode Claude Code has no credential of its own to list the gateway's models, so the extension writes Claude Code's model picker cache and turns on gateway model discovery. The `tetrate-model-provider.claudeCode.pickerModels` setting decides what the picker lists:
+
+| Value | Picker contents |
+| --- | --- |
+| `anthropic` (default) | Anthropic models only. These are the models passthrough bills to your subscription. |
+| `all` | Every model the API key reaches. Non-Anthropic models route on Agent Router's own credentials and are billed to the Agent Router account. |
+| `off` | Nothing is written, and Claude Code's built-in model list applies. |
+
+The list is refreshed when the setting changes and when **Refresh Model List** runs. To refresh it on demand, run **Tetrate Agent Router: Refresh Claude Code Model Picker**, then restart Claude Code or open `/model`. Any model the project can route can still be selected by name, for example `claude --model claude-opus-5`, whether or not it is listed.
+
+The cache format is internal to Claude Code and may change in any release. If a Claude Code update stops showing the list, set `pickerModels` to `off`.
+
+### Rotate or remove the key
+
+- **Replacing the key.** After **Set Agent Router API Key** stores a new key for the configured endpoint, a notification offers **Update Claude Code**. Accept it so that Claude Code stops sending the old key.
+- **Clearing the key.** After **Clear Agent Router API Key**, a notification offers **Remove from Claude Code**, so a revoked key does not stay in the file.
+- **Removing passthrough.** Run **Tetrate Agent Router: Remove Claude Code Configuration**, or select the trash icon on the **Claude Code** row. It removes exactly what the extension wrote. A value edited by hand since then is kept and named in the notification.
+
+### What changes in Claude Code's settings
+
+The extension edits the `env` block of Claude Code's user settings, `~/.claude/settings.json` on macOS and Linux and `%USERPROFILE%\.claude\settings.json` on Windows. When `CLAUDE_CONFIG_DIR` is set, it edits the file in that directory instead. For the endpoint `https://router.tare-acme.tetrate.ai/v1`, the result looks like this:
+
+```jsonc
+{
+    // ...other settings are kept unchanged
+    "env": {
+        "ANTHROPIC_BASE_URL": "https://router.tare-acme.tetrate.ai",
+        "ANTHROPIC_CUSTOM_HEADERS": "x-tars-api-key: <your Agent Router key>",
+        "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"
+    }
+}
+```
+
+- Existing lines in `ANTHROPIC_CUSTOM_HEADERS` are kept. Only the `x-tars-api-key` line is added or replaced.
+- `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are removed from the block, because either would replace the subscription sign-in and turn the setup into managed mode.
+- The previous file is saved alongside as `settings.json.bak-<timestamp>`. The new file is written with owner-only permissions (`0600`), because it now holds the Agent Router key in plain text. That file is the only place Claude Code reads custom headers from.
+- The model picker cache is written to `cache/gateway-models.json` in the same directory.
+- A settings file that is not valid JSON is never overwritten. The extension reports the problem and leaves the file alone.
+
+### Limitations
+
+- **The extension never touches the Claude sign-in.** Anthropic requires the subscription sign-in to complete through its own flow, and does not allow third-party tools to collect or forward subscription credentials. Passthrough traffic therefore comes from Claude Code itself.
+- **Models used from VS Code chat or from other extensions are not passed through.** They keep using the Agent Router key and are billed to the Agent Router account.
+- **Only Anthropic providers pass through.** Vertex, Bedrock, OpenAI, and self-hosted models route on Agent Router's credentials even in a passthrough session.
+- **Remote windows configure the local machine.** The extension runs on the local side, so in an SSH, container, or WSL window it changes the local Claude Code settings, not the remote ones.
+- **Anthropic's Claude Code extension for VS Code** reads the same settings file through the Claude Code CLI. If it ignores the gateway, set the same variables in its `claudeCode.environmentVariables` setting.
+
+### Troubleshooting passthrough
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `/status` does not show the Agent Router base URL | A higher-precedence settings file sets `ANTHROPIC_BASE_URL`: a project `.claude/settings.json` or `.claude/settings.local.json`, or managed settings. Remove it there. |
+| The Overview row reads `uses an API key, not passthrough` | `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` was added to the settings after configuration. Run **Configure Claude Code for Passthrough** again. |
+| The Overview row reads `passthrough, key missing or out of date` | The stored Agent Router key changed. Run **Configure Claude Code for Passthrough** again, or accept **Update Claude Code** after the next key change. |
+| Requests never reach Request Logs | Claude Code is not using the gateway. Check `/status`, and make sure the base URL does not end in `/v1/messages`. |
+| `401` on every request | The Claude sign-in expired. Run `claude /login` again. |
+| `404 model_not_routed` or `400 model_not_found` | The model is not enabled or not assigned to the project. Ask an administrator to assign it. |
+| `400` mentioning `anthropic-beta` | The data plane is older than 0.3.0. Set `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` to `1` in the same `env` block. |
+| Claude Code bills an API key instead of the subscription | `ANTHROPIC_API_KEY` is exported in the shell. Unset it and start a new session. |
+| Claude Code keeps asking to sign in on macOS | Temporarily rename `~/.claude.json` and sign in again. |
+| The `/model` picker is empty | Check that `pickerModels` is not `off`, run **Refresh Claude Code Model Picker**, and restart Claude Code. |
 
 ## Using the models from another extension
 
