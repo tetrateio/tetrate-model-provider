@@ -92,8 +92,9 @@ Secret storage is per-machine and does not sync across Settings Sync.
 | `tetrate-model-provider.profiles` | object | `{}` | machine | Named endpoints for the **Switch Endpoint** command. |
 | `tetrate-model-provider.sessionAttribution` | boolean | `false` | window | Send a per-window `agent-session-id` header, recorded by the gateway as a trace attribute. |
 | `tetrate-model-provider.spendWarning` | number | `0` | window | Warn once the day's estimated cost reaches this many dollars. `0` disables it. |
+| `tetrate-model-provider.passthrough.enabled` | boolean | `false` | machine | Send Claude models in passthrough mode with your own Anthropic API key. See [Passthrough mode](#passthrough-mode). |
 
-`baseUrl` and `requestHeaders` are machine-scoped, so they can be set in User settings but not in a workspace or folder `settings.json`. Both decide where the API key is sent, and a cloned repository must not be able to point it somewhere else. `modelFilter` only narrows the picker, so it stays settable per workspace.
+`baseUrl`, `requestHeaders`, and `passthrough.enabled` are machine-scoped, so they can be set in User settings but not in a workspace or folder `settings.json`. Both decide where the API key is sent, and a cloned repository must not be able to point it somewhere else. `modelFilter` only narrows the picker, so it stays settable per workspace.
 
 Changing any of these reloads the model list. **Tetrate Agent Router: Refresh Model List** does the same on demand.
 
@@ -154,7 +155,7 @@ Use `requestHeaders` for a routing hint or a tenant identifier required by a sel
 }
 ```
 
-Do not put the API key here. It belongs in secret storage, and settings files are frequently committed to source control. An `Authorization` entry is discarded: that header is always derived from the stored key.
+Do not put the API key here. It belongs in secret storage, and settings files are frequently committed to source control. `Authorization`, `x-api-key`, and `x-tars-api-key` entries are discarded: those headers are always derived from the stored keys.
 
 ### Per-model overrides
 
@@ -209,6 +210,8 @@ Costs are estimates computed from the public catalog's current prices; the Agent
 | Tetrate Agent Router: Test Connection | Send a one-token completion and report the round trip. |
 | Tetrate Agent Router: Add Endpoint Profile | Name and store an endpoint for the Switch Endpoint command. |
 | Tetrate Agent Router: Remove Endpoint Profile | Remove a stored endpoint profile. |
+| Tetrate Agent Router: Set Anthropic API Key for Passthrough | Store your own Anthropic API key for passthrough on the configured endpoint. |
+| Tetrate Agent Router: Clear Anthropic API Key | Remove the passthrough key; Claude models return to the Agent Router key. |
 
 ## The Overview view
 
@@ -221,6 +224,65 @@ A **Tetrate Agent Router** icon in the activity bar opens the Overview view, whi
 A **Recent Requests** view below it lists the last 50 completed requests, newest first, with tokens, cost, duration, an icon marking truncated or filtered answers, and a `via <backend>` marker when fallback routing or a model-name override answered with a different backend. An inline action copies the request id, which finds the request in the Console's Request Logs. When a request fails, the output channel logs a triage verdict: whether the gateway itself, an upstream provider, or neither is the problem.
 
 When no API key is stored for the configured endpoint, the view shows the setup buttons instead. **Tetrate Agent Router: Test Connection** confirms a fresh setup end to end by sending a one-token completion and reporting the round trip.
+
+## Passthrough mode
+
+In passthrough mode, Claude models are paid for by your own Anthropic account instead of the Agent Router account. The gateway still routes the requests, applies the project's model grants, and records them in the Console's Request Logs with the label `passthrough`. Passthrough usage does not count toward Agent Router budgets.
+
+The extension follows the gateway's passthrough contract: Claude requests go to the gateway's Anthropic Messages API (`/v1/messages`) with your Anthropic credential in `x-api-key`, which the gateway forwards upstream untouched, and the Agent Router key in `x-tars-api-key`, which the gateway uses only for routing and attribution. Every other model keeps using chat completions and the Agent Router key.
+
+### Requirements
+
+| Requirement | Detail |
+| --- | --- |
+| Agent Router Enterprise | Passthrough is an Enterprise data-plane feature. The hosted endpoint may not offer it. |
+| Administrator setup | The project needs an Anthropic provider with authentication type **API key**, and the Claude models you use must be enabled and assigned to the project. See [Enable passthrough](https://docs.tetrate.ai/agent-router-enterprise/guides/operate-and-govern/manage-models-and-providers/enable-passthrough-for-claude-code/). |
+| Anthropic API key | Your own key from the [Claude Console](https://platform.claude.com/), starting with `sk-ant-api`. Anthropic bills its usage to that key's account. |
+| Agent Router API key | Stored for the same endpoint, as for managed use. |
+
+A Claude Pro or Max subscription cannot be used from VS Code. Anthropic allows subscription sign-ins only in its own applications, so the extension accepts API keys only and rejects subscription tokens (`sk-ant-oat…`).
+
+### Turn on passthrough
+
+1. Select the project's gateway endpoint with **Tetrate Agent Router: Switch Endpoint** or **Set Base URL**, and make sure an Agent Router API key is stored for it.
+1. Run **Tetrate Agent Router: Set Anthropic API Key for Passthrough** and paste your Anthropic API key. The key is kept in VS Code secret storage, scoped to the endpoint host, like the Agent Router key.
+1. Select **Enable Passthrough** in the notification, or set `"tetrate-model-provider.passthrough.enabled": true` in User settings.
+1. Run **Tetrate Agent Router: Test Connection**. With passthrough on, it sends a second one-token request through `/v1/messages` with both keys and reports the result.
+
+### Check that it works
+
+- In the model picker, Claude models show `· passthrough` in their detail line.
+- The **Passthrough** row in the Overview view reads `on for Claude models`. **Show Connection Status** reports the same.
+- After a request, its Recent Requests row shows `passthrough`, and the output channel logs `· passthrough`.
+- In the Console, **Request Logs** shows the request with the `passthrough` label.
+
+### Usage and cost
+
+Passthrough requests are counted with their tokens, but their cost is kept apart from Agent Router spend, the same way the gateway keeps it out of budgets. It is shown as an `≈` estimate at the catalog's API prices, labelled as billed by Anthropic, in the status bar hover, the dashboard, the Recent Requests view, and `@tetrate /usage`. It does not count toward the status bar total or `spendWarning`. Anthropic's own console is the billing authority for it.
+
+### Turn off passthrough
+
+Set `passthrough.enabled` to `false`, or run **Tetrate Agent Router: Clear Anthropic API Key**. Either way, Claude models go back to the managed path with the Agent Router key immediately.
+
+### Behaviour on the passthrough path
+
+- **Only Anthropic models.** Models in the `anthropic` family, or whose id contains `claude` or `anthropic`, take the passthrough path. Vertex, Bedrock, OpenAI, and other models keep the managed path.
+- **One provider.** The gateway keeps a passthrough request on its Anthropic provider. Fallback steps on other providers are skipped.
+- **`max_tokens` is always sent**, because the Messages API requires it: the `maxTokens` override, else a caller's `max_tokens` model option, else the model's output budget capped at 32,000 tokens.
+- **Temperature is capped at 1**, the Messages API's maximum.
+- **Other `modelOptions` are forwarded** to the Messages API as they are, so they must be Messages parameters.
+- **Extended thinking is not requested.** VS Code cannot return thinking blocks on later turns, which the API requires once tools are involved.
+- **Tool results with images** are sent as native image blocks, without the managed path's workaround.
+
+### Troubleshooting passthrough
+
+| Symptom | Cause and fix |
+| --- | --- |
+| "Anthropic rejected the passthrough API key" | The Anthropic key is invalid or revoked. Run **Set Anthropic API Key for Passthrough** with a fresh key. |
+| Claude models do not show `· passthrough` | Passthrough is off, or no Anthropic key is stored for this endpoint. Check the **Passthrough** row in the Overview view. |
+| `404 model_not_routed` or `model_not_found` | The model is not enabled or not assigned to the project. Ask an administrator to assign it. |
+| Requests are not labelled `passthrough` in Request Logs | The gateway does not have passthrough set up for the project's Anthropic provider. Ask an administrator. |
+| `404 Unsupported endpoint` | The gateway does not serve `/v1/messages`. Passthrough needs an Agent Router Enterprise data plane. |
 
 ## The @tetrate chat participant
 
@@ -410,6 +472,7 @@ Image cost is a flat estimate, since real cost scales with resolution and comput
 - **Reasoning traces** are not surfaced. The provider response part types have no thinking part in the supported VS Code versions. A default `reasoning_effort` can be set per model through `modelOverrides`, and reasoning tokens are reported in the usage breakdown.
 - **Prompt caching** is not configured explicitly. Where the upstream provider applies it automatically, it still takes effect.
 - **Retries** follow the OpenAI SDK default of two retries on transient failures, for three attempts in total. A retry happens only before the stream opens, so a partially delivered answer is never re-requested.
+- **Passthrough** changes the protocol, credential, and billing for Claude models only when it is turned on; see [Passthrough mode](#passthrough-mode).
 - **Rate limits and errors** propagate as-is. A 401 or 403 becomes a `LanguageModelError.NoPermissions`, a 404 becomes `NotFound`, and everything else surfaces with the status and the server's message.
 
 ## Troubleshooting
@@ -437,7 +500,7 @@ Prompts, file contents, and tool results are sent to the configured base URL, wh
 
 One additional request goes to `router.tetrate.ai/api/public/models` to read model metadata. It is unauthenticated and carries no prompt content or API key.
 
-The API key is sent as a bearer token to the configured base URL only.
+The API key is sent as a bearer token to the configured base URL only. With passthrough on, the Agent Router key is sent in `x-tars-api-key` and your Anthropic API key in `x-api-key` on Claude requests, both to the configured base URL only; the gateway forwards the Anthropic key to Anthropic.
 
 ## License
 

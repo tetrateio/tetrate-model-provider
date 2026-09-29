@@ -59,6 +59,8 @@ export type TreeDeps = {
     gatewayStatus(): Promise<GatewayStatus>;
     /** Per-provider health from /v1/status; undefined when not served. */
     providerReport(): Promise<ProviderReport | undefined>;
+    /** Whether an Anthropic passthrough key is stored for the endpoint. */
+    hasAnthropicKey(baseUrl: string): Promise<boolean>;
     session: UsageTracker;
     history: UsageHistory;
 };
@@ -334,7 +336,14 @@ export class AgentRouterTreeProvider
             ([, url]) => url === config.baseUrl
         )?.[0];
         const catalog = this.deps.catalogInfo();
-        const gateway = await this.deps.gatewayStatus();
+        const [gateway, anthropicKey] = await Promise.all([
+            this.deps.gatewayStatus(),
+            this.deps.hasAnthropicKey(config.baseUrl),
+        ]);
+        const passthrough = describePassthrough(
+            config.passthroughEnabled,
+            anthropicKey
+        );
         return [
             {
                 kind: 'leaf',
@@ -370,6 +379,15 @@ export class AgentRouterTreeProvider
                 tooltip: 'Click to refresh the model list and catalog.',
                 icon: 'database',
                 command: 'tetrate-model-provider.refreshModels',
+            },
+            {
+                kind: 'leaf',
+                label: 'Passthrough',
+                description: passthrough.description,
+                tooltip:
+                    'Passthrough sends Claude models with your own Anthropic API key, billed by Anthropic, while Agent Router routes and logs them. Click to set the key.',
+                icon: passthrough.icon,
+                command: 'tetrate-model-provider.setAnthropicKey',
             },
             { kind: 'providerHealth' },
             { kind: 'profiles' },
@@ -472,6 +490,22 @@ export class AgentRouterTreeProvider
             },
         ];
     }
+}
+
+/** The Passthrough row's phrase and icon; shared with the status report. */
+export function describePassthrough(
+    enabled: boolean,
+    hasAnthropicKey: boolean
+): { description: string; icon: string } {
+    if (!enabled) {
+        return { description: 'off', icon: 'circle-outline' };
+    }
+    return hasAnthropicKey
+        ? { description: 'on for Claude models', icon: 'check' }
+        : {
+              description: 'on, but no Anthropic key is stored',
+              icon: 'warning',
+          };
 }
 
 /** One decimal reads naturally for sub-10s latencies, e.g. `0.8s`. */

@@ -1,5 +1,15 @@
+import Anthropic, {
+    type ClientOptions as AnthropicClientOptions,
+} from '@anthropic-ai/sdk';
 import OpenAI, { type ClientOptions } from 'openai';
 import * as vscode from 'vscode';
+
+import {
+    convertToAnthropic,
+    convertToolChoice,
+    convertToolsToAnthropic,
+} from './anthropicMessages';
+import { MessageStreamAccumulator } from './anthropicStream';
 
 import {
     type CatalogModel,
@@ -13,6 +23,7 @@ import {
 import { loadPublicCatalog, peekPublicCatalog } from './catalogCache';
 import {
     getConfig,
+    messagesBaseUrl,
     type ModelOverride,
     overridesFor,
     type ProviderConfig,
@@ -24,7 +35,7 @@ import {
     fetchProviderReport,
 } from './health';
 import { convertMessages, convertToolMode, convertTools } from './messages';
-import { getApiKey, promptForApiKey } from './secrets';
+import { getAnthropicKey, getApiKey, promptForApiKey } from './secrets';
 import { countTokens } from './tokenCount';
 import {
     ActivityTracker,
@@ -60,6 +71,31 @@ export const FIRST_OUTPUT_TIMEOUT_MS = 180_000;
  * the user cancels.
  */
 export const STREAM_IDLE_TIMEOUT_MS = 60_000;
+
+/**
+ * The header the gateway reads the Agent Router key from on the passthrough
+ * path, where `x-api-key` carries the caller's own Anthropic credential.
+ */
+export const TARS_KEY_HEADER = 'x-tars-api-key';
+
+/**
+ * `max_tokens` is mandatory on the Messages API. With no override, the model's
+ * advertised output budget is sent, capped so an oversized catalog figure does
+ * not reserve more than a normal answer needs.
+ */
+const PASSTHROUGH_MAX_TOKENS_CAP = 32_000;
+
+/**
+ * Whether a model can take the passthrough path. Passthrough forwards an
+ * Anthropic credential to an Anthropic API, so only Anthropic models qualify;
+ * every other model keeps the managed path even with passthrough enabled.
+ */
+export function isAnthropicModel(model: {
+    id: string;
+    family?: string;
+}): boolean {
+    return model.family === 'anthropic' || /claude|anthropic/i.test(model.id);
+}
 
 /**
  * How long a model list stays usable. Bounded so a newly added upstream model
@@ -116,6 +152,9 @@ export class TetrateChatModelProvider
      */
     private keyCache?: { value: string | undefined };
 
+    /** The Anthropic passthrough key, cached and dropped the same way. */
+    private anthropicKeyCache?: { value: string | undefined };
+
     private changeTimer?: ReturnType<typeof setTimeout>;
 
     /** Disambiguates synthesized tool-call ids across turns; see finish(). */
@@ -134,6 +173,10 @@ export class TetrateChatModelProvider
         private readonly createClient: (options: ClientOptions) => OpenAI = (
             options
         ) => new OpenAI(options),
+        /** Lets tests substitute a scripted Messages client for passthrough. */
+        private readonly createAnthropicClient: (
+            options: AnthropicClientOptions
+        ) => Anthropic = (options) => new Anthropic(options),
         /** Injectable so unit tests never reach the network for triage. */
         private readonly health = {
             gateway: fetchGatewayStatus,
@@ -158,6 +201,7 @@ export class TetrateChatModelProvider
         this.cache = undefined;
         this.inflight = undefined;
         this.keyCache = undefined;
+        this.anthropicKeyCache = undefined;
 
         if (this.changeTimer) {
             return;
@@ -184,7 +228,13 @@ export class TetrateChatModelProvider
         // The API key is deliberately not part of this key: every path that
         // changes it calls invalidate(), and keeping the secret out of a
         // long-lived string avoids it surfacing anywhere unintended.
-        const cacheKey = `${config.baseUrl}|${config.modelFilter.join(',')}`;
+        // Passthrough changes what the picker says about Anthropic models, so
+        // it is part of the key; a stored Anthropic key is too, since without
+        // one those models stay on the managed path.
+        const passthrough =
+            config.passthroughEnabled &&
+            (await this.passthroughKeyFor(config)) !== undefined;
+        const cacheKey = `${config.baseUrl}|${config.modelFilter.join(',')}|${passthrough}`;
         const cached = this.cache;
         if (cached?.key === cacheKey && Date.now() - cached.at < MODEL_CACHE_TTL_MS) {
             return cached.models;
@@ -198,7 +248,14 @@ export class TetrateChatModelProvider
             return this.inflight.promise;
         }
 
-        const promise = this.discover(config, apiKey, cacheKey, options, token);
+        const promise = this.discover(
+            config,
+            apiKey,
+            cacheKey,
+            options,
+            token,
+            passthrough
+        );
         this.inflight = { key: cacheKey, promise };
         try {
             return await promise;
@@ -214,7 +271,8 @@ export class TetrateChatModelProvider
         apiKey: string,
         cacheKey: string,
         options: vscode.PrepareLanguageModelChatModelOptions,
-        token: vscode.CancellationToken
+        token: vscode.CancellationToken,
+        passthrough: boolean
     ): Promise<vscode.LanguageModelChatInformation[]> {
         try {
             const [apiModels, catalog] = await Promise.all([
@@ -227,7 +285,12 @@ export class TetrateChatModelProvider
                 loadPublicCatalog(this.context.globalState, token),
             ]);
 
-            const models = selectChatModels(apiModels, catalog, config);
+            const models = selectChatModels(apiModels, catalog, config).map(
+                (model) =>
+                    passthrough && isAnthropicModel(model)
+                        ? markPassthrough(model)
+                        : model
+            );
             // Gateway-reported prices are per key and win over the public
             // catalog; the catalog still prices models on gateways that do
             // not enrich their /models entries.
@@ -277,10 +340,9 @@ export class TetrateChatModelProvider
         }
 
         const requestId = crypto.randomUUID();
-        const chatMessages = convertMessages(messages, {
-            toolResultImages: model.capabilities?.imageInput === true,
-        });
-        if (chatMessages.length === 0) {
+        // Both protocols drop the same parts, so the OpenAI conversion
+        // answers "is there anything to send" for either.
+        if (convertMessages(messages).length === 0) {
             this.log.warn(
                 `Request to ${model.id} carried no convertible content; nothing was sent.`
             );
@@ -317,125 +379,50 @@ export class TetrateChatModelProvider
         };
 
         const activityHandle = this.activity.begin(model.id);
-        try {
-            const tools = convertTools(options.tools);
-            const override = overridesFor(model.id, config.modelOverrides);
-            const pending = this.client(config, apiKey).chat.completions.create(
-                {
-                    // Callers may pass provider-specific knobs such as
-                    // temperature, max_tokens or reasoning_effort straight
-                    // through. Spread first so the fields below cannot be
-                    // overridden — clobbering `stream` or `messages` would
-                    // break the response handling outright. The per-model
-                    // overrides sit in between: they are the user's own
-                    // setting, so they outrank a calling extension's defaults.
-                    ...(options.modelOptions ?? {}),
-                    ...overrideParams(override),
-                    model: model.id,
-                    messages: chatMessages,
-                    stream: true,
-                    // Asks for billed token counts on a final chunk that
-                    // carries an empty `choices` array.
-                    stream_options: { include_usage: true },
-                    ...(tools
-                        ? {
-                              tools,
-                              tool_choice: convertToolMode(options.toolMode),
-                          }
-                        : {}),
-                },
-                {
-                    signal: controller.signal,
-                    headers: {
-                        // Echoed back as x-client-request-id and indexed by
-                        // the service's Request Logs, so one id correlates
-                        // the local record with the server-side one.
-                        'X-Request-ID': requestId,
-                        // A reasoning-effort override marks the model as
-                        // reasoning-capable for this call, so the gateway
-                        // does not strip thinking fields toward an
-                        // OpenAI-shaped backend the catalog mislabels.
-                        ...(override.reasoningEffort !== undefined
-                            ? { 'x-tars-supports-reasoning': 'true' }
-                            : {}),
-                    },
-                }
-            );
-
-            // withResponse() exposes the response headers, where the gateway
-            // names any fields it dropped translating across providers. The
-            // fallback path keeps scripted test clients working.
-            let responseHeaders: Headers | undefined;
-            const stream = await (async () => {
-                const withResponse = (
-                    pending as {
-                        withResponse?: () => Promise<{
-                            data: Awaited<typeof pending>;
-                            response: { headers: Headers };
-                        }>;
-                    }
-                ).withResponse;
-                if (typeof withResponse === 'function') {
-                    const result = await withResponse.call(pending);
-                    responseHeaders = result.response.headers;
-                    return result.data;
-                }
-                return pending;
-            })();
-
-            const toolCalls = new ToolCallAccumulator(`call_${this.turn++}`);
-            const startedAt = Date.now();
-            let firstOutputAt: number | undefined;
-            let finishReason: string | undefined;
-            let servedBy: string | undefined;
-            let usage: OpenAI.Completions.CompletionUsage | undefined;
-            let reportedText = 0;
-            let outputStarted = false;
-
-            // A chunk carrying an `error` field never reaches this loop: the
-            // SDK raises it as an APIError before yielding.
-            armIdleTimer('first');
-            for await (const chunk of stream) {
-                if (chunk.usage) {
-                    usage = chunk.usage;
-                }
-                // The response names the backend that actually answered,
-                // which differs from the requested id under fallback routing
-                // or a model-name override on the key.
-                if (chunk.model && chunk.model !== model.id) {
-                    servedBy = chunk.model;
-                }
-                const choice = chunk.choices[0];
-                if (choice?.finish_reason) {
-                    finishReason = choice.finish_reason;
-                }
-
-                const delta = choice?.delta;
-                if (delta?.content) {
-                    reportedText += delta.content.length;
-                    progress.report(
-                        new vscode.LanguageModelTextPart(delta.content)
-                    );
-                    outputStarted = true;
-                }
-                if (delta?.tool_calls?.length) {
-                    toolCalls.add(delta.tool_calls);
-                    outputStarted = true;
-                }
-                if (outputStarted && firstOutputAt === undefined) {
-                    firstOutputAt = Date.now();
-                    this.activity.markOutput(activityHandle);
-                }
-
-                // Armed after the chunk is handled so the allowance measures
-                // the gap to the next one. Role-only and reasoning chunks keep
-                // the longer allowance: the model has not started answering.
-                armIdleTimer(outputStarted ? 'idle' : 'first');
+        // Called after every chunk: armed after the chunk is handled so the
+        // allowance measures the gap to the next one. Role-only and reasoning
+        // chunks keep the longer allowance, since the model has not started
+        // answering yet.
+        let firstOutputAt: number | undefined;
+        const onChunk = (outputStarted: boolean) => {
+            if (outputStarted && firstOutputAt === undefined) {
+                firstOutputAt = Date.now();
+                this.activity.markOutput(activityHandle);
             }
+            armIdleTimer(outputStarted ? 'idle' : 'first');
+        };
+        const passthrough = await this.passthroughKey(config, model);
+        try {
+            const startedAt = Date.now();
+            armIdleTimer('first');
+            const streamed = passthrough
+                ? await this.streamMessages(
+                      config,
+                      apiKey,
+                      passthrough,
+                      model,
+                      messages,
+                      options,
+                      requestId,
+                      controller.signal,
+                      progress,
+                      onChunk
+                  )
+                : await this.streamChatCompletions(
+                      config,
+                      apiKey,
+                      model,
+                      messages,
+                      options,
+                      requestId,
+                      controller.signal,
+                      progress,
+                      onChunk
+                  );
 
-            // The SDK's iterator returns quietly on the abort it sees
-            // mid-stream, so a stall or a cancellation ends the loop as though
-            // the answer were complete.
+            // Both SDKs' iterators return quietly on the abort they see
+            // mid-stream, so a stall or a cancellation ends the loop as
+            // though the answer were complete.
             if (stalled) {
                 throw stalled;
             }
@@ -445,17 +432,15 @@ export class TetrateChatModelProvider
 
             // Silent capability loss is the docs' stated risk of crossing
             // providers; the gateway names what it removed, so say so.
-            const dropped = responseHeaders?.get('x-tars-dropped-fields');
-            if (dropped) {
+            if (streamed.droppedFields) {
                 this.log.warn(
-                    `${model.id}: the gateway dropped request fields crossing providers: ${dropped}`
+                    `${model.id}: the gateway dropped request fields crossing providers: ${streamed.droppedFields}`
                 );
             }
 
-            // Arguments arrive as string fragments, so a call is only reportable
-            // once the stream has finished delivering it.
-            const calls = toolCalls.finish();
-            for (const call of calls) {
+            // Arguments arrive as string fragments, so a call is only
+            // reportable once the stream has finished delivering it.
+            for (const call of streamed.calls) {
                 if (call.malformedArguments) {
                     this.log.warn(
                         `${model.id} sent unparseable arguments for tool "${call.name}"; passing an empty object: ${call.malformedArguments.slice(0, 200)}`
@@ -472,22 +457,23 @@ export class TetrateChatModelProvider
 
             this.reportFinishReason(
                 model,
-                finishReason,
-                reportedText,
-                calls.length,
+                streamed.finishReason,
+                streamed.reportedText,
+                streamed.calls.length,
                 progress
             );
             this.recordUsage(
                 model.id,
-                usage,
+                streamed.usage,
                 {
                     startedAt,
                     firstOutputAt,
                     finishedAt: Date.now(),
                 },
-                finishReason,
+                streamed.finishReason,
                 requestId,
-                servedBy
+                streamed.servedBy,
+                passthrough !== undefined
             );
         } catch (error) {
             if (stalled) {
@@ -499,11 +485,11 @@ export class TetrateChatModelProvider
                 return;
             }
             this.log.error(
-                `Request to ${model.id} failed: ${describe(error)}`
+                `Request to ${model.id}${passthrough ? ' (passthrough)' : ''} failed: ${describe(error)}`
             );
             void this.triage(config, apiKey);
             this.offerRetryHint(error, model.id);
-            throw toLanguageModelError(error);
+            throw toLanguageModelError(error, passthrough !== undefined);
         } finally {
             this.activity.end(activityHandle);
             if (idleTimer) {
@@ -511,6 +497,272 @@ export class TetrateChatModelProvider
             }
             cancellation.dispose();
         }
+    }
+
+    /**
+     * The Anthropic key to pass through for this request, or undefined when
+     * the request takes the managed path: passthrough off, a non-Anthropic
+     * model, or no key stored for the endpoint.
+     */
+    private async passthroughKey(
+        config: ProviderConfig,
+        model: vscode.LanguageModelChatInformation
+    ): Promise<string | undefined> {
+        if (!config.passthroughEnabled || !isAnthropicModel(model)) {
+            return undefined;
+        }
+        return this.passthroughKeyFor(config);
+    }
+
+    private async passthroughKeyFor(
+        config: ProviderConfig
+    ): Promise<string | undefined> {
+        if (!this.anthropicKeyCache) {
+            this.anthropicKeyCache = {
+                value: await getAnthropicKey(this.context, config.baseUrl),
+            };
+        }
+        return this.anthropicKeyCache.value;
+    }
+
+    /**
+     * The passthrough path: the Anthropic Messages API on the same gateway,
+     * with the user's own Anthropic key in `x-api-key`, which the gateway
+     * forwards upstream untouched, and the Agent Router key in
+     * `x-tars-api-key` for routing and attribution only. Anthropic bills the
+     * key's owner; the gateway logs the request as `passthrough`.
+     */
+    private async streamMessages(
+        config: ProviderConfig,
+        apiKey: string,
+        anthropicKey: string,
+        model: vscode.LanguageModelChatInformation,
+        messages: readonly vscode.LanguageModelChatRequestMessage[],
+        options: vscode.ProvideLanguageModelChatResponseOptions,
+        requestId: string,
+        signal: AbortSignal,
+        progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+        onChunk: (outputStarted: boolean) => void
+    ): Promise<StreamResult> {
+        const conversation = convertToAnthropic(messages);
+        const tools = convertToolsToAnthropic(options.tools);
+        const override = overridesFor(model.id, config.modelOverrides);
+        const client = this.createAnthropicClient({
+            apiKey: anthropicKey,
+            // Explicitly null: the SDK otherwise reads ANTHROPIC_AUTH_TOKEN
+            // from the environment and would send a second credential.
+            authToken: null,
+            baseURL: messagesBaseUrl(config.baseUrl),
+            timeout: RESPONSE_TIMEOUT_MS,
+            maxRetries: 2,
+            defaultHeaders: this.defaultHeaders(config, {
+                [TARS_KEY_HEADER]: apiKey,
+            }),
+        });
+
+        const request = client.messages.create(
+            {
+                // Same precedence as the managed path: caller options first,
+                // then the user's overrides, then the fields the response
+                // handling depends on.
+                ...((options.modelOptions ?? {}) as Record<string, unknown>),
+                ...(override.temperature !== undefined
+                    ? { temperature: Math.min(override.temperature, 1) }
+                    : {}),
+                model: model.id,
+                max_tokens:
+                    override.maxTokens ??
+                    numberOption(options.modelOptions, 'max_tokens') ??
+                    Math.min(model.maxOutputTokens, PASSTHROUGH_MAX_TOKENS_CAP),
+                messages: conversation.messages,
+                ...(conversation.system ? { system: conversation.system } : {}),
+                stream: true,
+                ...(tools
+                    ? { tools, tool_choice: convertToolChoice(options.toolMode) }
+                    : {}),
+            } as Anthropic.Messages.MessageCreateParamsStreaming,
+            { signal, headers: { 'X-Request-ID': requestId } }
+        );
+
+        let responseHeaders: Headers | undefined;
+        const stream = await (async () => {
+            const withResponse = (
+                request as {
+                    withResponse?: () => Promise<{
+                        data: Awaited<typeof request>;
+                        response: { headers: Headers };
+                    }>;
+                }
+            ).withResponse;
+            if (typeof withResponse === 'function') {
+                const result = await withResponse.call(request);
+                responseHeaders = result.response.headers;
+                return result.data;
+            }
+            return request;
+        })();
+
+        const accumulator = new MessageStreamAccumulator();
+        let reportedText = 0;
+        for await (const event of stream) {
+            for (const output of accumulator.handle(event)) {
+                reportedText += output.text.length;
+                progress.report(new vscode.LanguageModelTextPart(output.text));
+            }
+            onChunk(accumulator.outputStarted);
+        }
+
+        const served = accumulator.servedModel;
+        return {
+            finishReason: accumulator.finishReasonForOpenAI(),
+            servedBy: served && served !== model.id ? served : undefined,
+            usage: accumulator.usage(),
+            reportedText,
+            calls: accumulator.finish(),
+            droppedFields:
+                responseHeaders?.get('x-tars-dropped-fields') ?? undefined,
+        };
+    }
+
+    /**
+     * The managed path: OpenAI chat completions, authenticated with the Agent
+     * Router key and billed to the Agent Router account.
+     */
+    private async streamChatCompletions(
+        config: ProviderConfig,
+        apiKey: string,
+        model: vscode.LanguageModelChatInformation,
+        messages: readonly vscode.LanguageModelChatRequestMessage[],
+        options: vscode.ProvideLanguageModelChatResponseOptions,
+        requestId: string,
+        signal: AbortSignal,
+        progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+        onChunk: (outputStarted: boolean) => void
+    ): Promise<StreamResult> {
+        const chatMessages = convertMessages(messages, {
+            toolResultImages: model.capabilities?.imageInput === true,
+        });
+        const tools = convertTools(options.tools);
+        const override = overridesFor(model.id, config.modelOverrides);
+        const pending = this.client(config, apiKey).chat.completions.create(
+            {
+                // Callers may pass provider-specific knobs such as
+                // temperature, max_tokens or reasoning_effort straight
+                // through. Spread first so the fields below cannot be
+                // overridden — clobbering `stream` or `messages` would break
+                // the response handling outright. The per-model overrides
+                // sit in between: they are the user's own setting, so they
+                // outrank a calling extension's defaults.
+                ...(options.modelOptions ?? {}),
+                ...overrideParams(override),
+                model: model.id,
+                messages: chatMessages,
+                stream: true,
+                // Asks for billed token counts on a final chunk that carries
+                // an empty `choices` array.
+                stream_options: { include_usage: true },
+                ...(tools
+                    ? {
+                          tools,
+                          tool_choice: convertToolMode(options.toolMode),
+                      }
+                    : {}),
+            },
+            {
+                signal,
+                headers: {
+                    // Echoed back as x-client-request-id and indexed by the
+                    // service's Request Logs, so one id correlates the local
+                    // record with the server-side one.
+                    'X-Request-ID': requestId,
+                    // A reasoning-effort override marks the model as
+                    // reasoning-capable for this call, so the gateway does not
+                    // strip thinking fields toward an OpenAI-shaped backend
+                    // the catalog mislabels.
+                    ...(override.reasoningEffort !== undefined
+                        ? { 'x-tars-supports-reasoning': 'true' }
+                        : {}),
+                },
+            }
+        );
+
+        // withResponse() exposes the response headers, where the gateway
+        // names any fields it dropped translating across providers. The
+        // fallback path keeps scripted test clients working.
+        let responseHeaders: Headers | undefined;
+        const stream = await (async () => {
+            const withResponse = (
+                pending as {
+                    withResponse?: () => Promise<{
+                        data: Awaited<typeof pending>;
+                        response: { headers: Headers };
+                    }>;
+                }
+            ).withResponse;
+            if (typeof withResponse === 'function') {
+                const result = await withResponse.call(pending);
+                responseHeaders = result.response.headers;
+                return result.data;
+            }
+            return pending;
+        })();
+
+        const toolCalls = new ToolCallAccumulator(`call_${this.turn++}`);
+        let finishReason: string | undefined;
+        let servedBy: string | undefined;
+        let usage: OpenAI.Completions.CompletionUsage | undefined;
+        let reportedText = 0;
+        let outputStarted = false;
+
+        // A chunk carrying an `error` field never reaches this loop: the SDK
+        // raises it as an APIError before yielding.
+        for await (const chunk of stream) {
+            if (chunk.usage) {
+                usage = chunk.usage;
+            }
+            // The response names the backend that actually answered, which
+            // differs from the requested id under fallback routing or a
+            // model-name override on the key.
+            if (chunk.model && chunk.model !== model.id) {
+                servedBy = chunk.model;
+            }
+            const choice = chunk.choices[0];
+            if (choice?.finish_reason) {
+                finishReason = choice.finish_reason;
+            }
+
+            const delta = choice?.delta;
+            if (delta?.content) {
+                reportedText += delta.content.length;
+                progress.report(new vscode.LanguageModelTextPart(delta.content));
+                outputStarted = true;
+            }
+            if (delta?.tool_calls?.length) {
+                toolCalls.add(delta.tool_calls);
+                outputStarted = true;
+            }
+            onChunk(outputStarted);
+        }
+
+        return {
+            finishReason,
+            servedBy,
+            usage: usage
+                ? {
+                      inputTokens: usage.prompt_tokens ?? 0,
+                      cachedInputTokens:
+                          usage.prompt_tokens_details?.cached_tokens ?? 0,
+                      outputTokens: usage.completion_tokens ?? 0,
+                      reasoningTokens:
+                          usage.completion_tokens_details?.reasoning_tokens ??
+                          0,
+                  }
+                : undefined,
+            reportedText,
+            calls: toolCalls.finish(),
+            droppedFields:
+                responseHeaders?.get('x-tars-dropped-fields') ?? undefined,
+        };
     }
 
     /**
@@ -568,25 +820,19 @@ export class TetrateChatModelProvider
      */
     private recordUsage(
         modelId: string,
-        usage: OpenAI.Completions.CompletionUsage | undefined,
+        request: RequestUsage | undefined,
         timing: RequestTiming,
         finishReason: string | undefined,
         requestId: string,
-        servedBy: string | undefined
+        servedBy: string | undefined,
+        passthrough: boolean
     ): void {
-        if (!usage) {
+        if (!request) {
             this.log.info(
                 `${modelId}: completed (${describeTiming(timing)}); no usage block received · ${requestId}`
             );
             return;
         }
-        const request: RequestUsage = {
-            inputTokens: usage.prompt_tokens ?? 0,
-            cachedInputTokens: usage.prompt_tokens_details?.cached_tokens ?? 0,
-            outputTokens: usage.completion_tokens ?? 0,
-            reasoningTokens:
-                usage.completion_tokens_details?.reasoning_tokens ?? 0,
-        };
         // The answering backend's price is the one that was charged; the
         // requested id keeps the aggregation key so a model's totals stay in
         // one row even when some requests fell back.
@@ -602,6 +848,7 @@ export class TetrateChatModelProvider
             finishReason,
             requestId,
             ...(servedBy ? { servedBy } : {}),
+            ...(passthrough ? { passthrough: true } : {}),
         });
 
         const cached =
@@ -614,8 +861,10 @@ export class TetrateChatModelProvider
                 : '';
         this.log.info(
             `${modelId}: ${formatTokens(request.inputTokens)} in${cached} + ${formatTokens(request.outputTokens)} out${reasoning}${
-                cost !== undefined ? ` ≈ ${formatCost(cost)}` : ''
-            }${servedBy ? ` · served by ${servedBy}` : ''} (${describeTiming(timing)}) · ${requestId}`
+                cost !== undefined
+                    ? ` ≈ ${formatCost(cost)}${passthrough ? ' at API rates, billed by Anthropic' : ''}`
+                    : ''
+            }${passthrough ? ' · passthrough' : ''}${servedBy ? ` · served by ${servedBy}` : ''} (${describeTiming(timing)}) · ${requestId}`
         );
     }
 
@@ -680,11 +929,19 @@ export class TetrateChatModelProvider
      */
     private readonly retryHinted = new Set<string>();
     private offerRetryHint(error: unknown, modelId: string): void {
-        if (!(error instanceof OpenAI.APIError)) {
+        if (
+            !(error instanceof OpenAI.APIError) &&
+            !(error instanceof Anthropic.APIError)
+        ) {
             return;
         }
+        const body = error.error as
+            | { code?: string; error?: { code?: string } }
+            | undefined;
         const code =
-            error.code ?? (error.error as { code?: string } | undefined)?.code;
+            ('code' in error ? (error.code as string | null | undefined) : undefined) ??
+            body?.code ??
+            body?.error?.code;
         if (code !== 'model_not_ready' || this.retryHinted.has(modelId)) {
             return;
         }
@@ -768,18 +1025,31 @@ export class TetrateChatModelProvider
             // retrying; the SDK stops once bytes are flowing, so a partially
             // delivered answer is never re-requested.
             maxRetries: 2,
-            defaultHeaders: {
-                'User-Agent': USER_AGENT,
-                // The gateway records custom headers as OpenTelemetry span
-                // attributes, so this groups one window's traffic in the
-                // Console's traces. Opt-in: it sends a new identifier off the
-                // machine, even if only a random one.
-                ...(config.sessionAttribution
-                    ? { 'agent-session-id': this.sessionId }
-                    : {}),
-                ...config.requestHeaders,
-            },
+            defaultHeaders: this.defaultHeaders(config),
         });
+    }
+
+    /**
+     * Headers both protocols send. Credentials are applied last, so a
+     * configured request header can never replace one; getConfig already
+     * strips such entries.
+     */
+    private defaultHeaders(
+        config: ProviderConfig,
+        credentials: Record<string, string> = {}
+    ): Record<string, string> {
+        return {
+            'User-Agent': USER_AGENT,
+            // The gateway records custom headers as OpenTelemetry span
+            // attributes, so this groups one window's traffic in the
+            // Console's traces. Opt-in: it sends a new identifier off the
+            // machine, even if only a random one.
+            ...(config.sessionAttribution
+                ? { 'agent-session-id': this.sessionId }
+                : {}),
+            ...config.requestHeaders,
+            ...credentials,
+        };
     }
 
     private async reportListFailure(error: unknown): Promise<void> {
@@ -806,6 +1076,26 @@ export class TetrateChatModelProvider
             );
         }
     }
+}
+
+/**
+ * Names the billing path where the model is chosen: a passthrough model is
+ * paid for by the user's own Anthropic account, which the picker must not
+ * leave to be discovered on an invoice.
+ */
+function markPassthrough(
+    model: vscode.LanguageModelChatInformation
+): vscode.LanguageModelChatInformation {
+    return {
+        ...model,
+        detail: `${model.detail ?? 'Agent Router'} · passthrough`,
+        tooltip: [
+            model.tooltip,
+            'Passthrough: sent with your own Anthropic API key and billed by Anthropic; Agent Router routes and logs it.',
+        ]
+            .filter(Boolean)
+            .join('\n'),
+    };
 }
 
 function indexPricing(
@@ -837,6 +1127,17 @@ function overrideParams(
             : {}),
     };
 }
+
+/** What either protocol's stream loop hands back to the shared wrapper. */
+type StreamResult = {
+    /** In the OpenAI vocabulary, whichever protocol answered. */
+    finishReason: string | undefined;
+    servedBy: string | undefined;
+    usage: RequestUsage | undefined;
+    reportedText: number;
+    calls: StreamedToolCall[];
+    droppedFields: string | undefined;
+};
 
 /** Request timing for the completion log line. */
 type RequestTiming = {
@@ -968,16 +1269,38 @@ export function parseArguments(args: string): object {
     return parseToolArguments(args).input;
 }
 
+/** A number-valued caller option, when the caller supplied one. */
+function numberOption(
+    modelOptions: { readonly [name: string]: unknown } | undefined,
+    name: string
+): number | undefined {
+    const value = modelOptions?.[name];
+    return typeof value === 'number' && Number.isFinite(value) && value > 0
+        ? Math.floor(value)
+        : undefined;
+}
+
 function isAbort(error: unknown): boolean {
     return (
         error instanceof OpenAI.APIUserAbortError ||
+        error instanceof Anthropic.APIUserAbortError ||
         (error instanceof Error && error.name === 'AbortError')
     );
 }
 
-function toLanguageModelError(error: unknown): Error {
+function toLanguageModelError(error: unknown, passthrough = false): Error {
+    if (error instanceof Anthropic.APIError) {
+        const message = `Agent Router passthrough: ${describe(error)}`;
+        if (error.status === 401 || error.status === 403) {
+            return vscode.LanguageModelError.NoPermissions(message);
+        }
+        if (error.status === 404) {
+            return vscode.LanguageModelError.NotFound(message);
+        }
+        return new Error(message);
+    }
     if (error instanceof OpenAI.APIError) {
-        const message = `Agent Router: ${describe(error)}`;
+        const message = `Agent Router${passthrough ? ' passthrough' : ''}: ${describe(error)}`;
         if (error.status === 401 || error.status === 403) {
             return vscode.LanguageModelError.NoPermissions(message);
         }
@@ -993,7 +1316,7 @@ function describe(error: unknown): string {
     if (error instanceof RequestTimeoutError) {
         return `${error.message}. The endpoint may be unreachable from this network.`;
     }
-    if (error instanceof OpenAI.APIError) {
+    if (error instanceof OpenAI.APIError || error instanceof Anthropic.APIError) {
         const status = error.status ? `HTTP ${error.status}` : 'request failed';
         const advice = adviceFor(error);
         return `${status}: ${error.message}${advice ? ` — ${advice}` : ''}`;
@@ -1009,13 +1332,27 @@ function describe(error: unknown): string {
  * this, every one of them reads as the same opaque failure.
  */
 export function adviceFor(
-    error: InstanceType<typeof OpenAI.APIError>
+    error: InstanceType<typeof OpenAI.APIError> | InstanceType<typeof Anthropic.APIError>
 ): string | undefined {
-    const body = (error.error ?? {}) as {
+    // The gateway's own fields sit at the top level of an OpenAI-shaped body
+    // and under `error` in an Anthropic-shaped one.
+    const raw = (error.error ?? {}) as { error?: object };
+    const body = {
+        ...raw,
+        ...(raw.error && typeof raw.error === 'object' ? raw.error : {}),
+    } as {
         code?: string;
         category?: string;
         your_hostnames?: string[];
+        type?: string;
     };
+    const passthrough = error instanceof Anthropic.APIError;
+
+    if (passthrough && error.status === 401) {
+        // On the passthrough path a 401 comes from Anthropic, forwarded:
+        // the Agent Router key travels separately in x-tars-api-key.
+        return 'Anthropic rejected the passthrough API key. Run "Tetrate Agent Router: Set Anthropic API Key for Passthrough" with a valid key from the Claude Console.';
+    }
 
     if (error.status === 429) {
         // The gateway marks a budget stop explicitly; a plain 429 is a rate
@@ -1030,7 +1367,9 @@ export function adviceFor(
         return `This API key belongs to a different gateway host${hosts ? ` (${hosts})` : ''}. Run "Tetrate Agent Router: Switch Endpoint".`;
     }
 
-    const code = error.code ?? body.code;
+    const code =
+        ('code' in error ? (error.code as string | null | undefined) : undefined) ??
+        body.code;
     switch (code) {
         case 'model_not_found':
             return 'The model is not in the catalog for this key, or is disabled.';

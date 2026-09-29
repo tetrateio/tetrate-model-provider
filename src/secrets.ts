@@ -30,6 +30,75 @@ function hostOf(baseUrl: string): string {
     }
 }
 
+/**
+ * The user's own Anthropic API key for passthrough, scoped per endpoint host
+ * like the Agent Router key. No unscoped legacy name exists for this one.
+ */
+export const ANTHROPIC_KEY_SECRET = 'tetrate-model-provider.anthropicApiKey';
+
+export function anthropicKeySecretName(baseUrl: string): string {
+    return `${ANTHROPIC_KEY_SECRET}:${hostOf(baseUrl)}`;
+}
+
+export async function getAnthropicKey(
+    context: vscode.ExtensionContext,
+    baseUrl: string
+): Promise<string | undefined> {
+    const stored = await context.secrets.get(anthropicKeySecretName(baseUrl));
+    return stored?.trim() ? stored.trim() : undefined;
+}
+
+export async function deleteAnthropicKey(
+    context: vscode.ExtensionContext,
+    baseUrl: string
+): Promise<void> {
+    await context.secrets.delete(anthropicKeySecretName(baseUrl));
+}
+
+/**
+ * An OAuth token from a Claude subscription sign-in, as opposed to an API key
+ * from the Claude Console. Anthropic permits subscription credentials only in
+ * its own applications, so this extension refuses to store one.
+ */
+export function isSubscriptionToken(value: string): boolean {
+    return /^sk-ant-oat/i.test(value.trim());
+}
+
+export function validateAnthropicKey(value: string): string | undefined {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+        return 'The Anthropic API key must not be empty.';
+    }
+    if (isSubscriptionToken(trimmed)) {
+        return 'That is a Claude subscription token. Passthrough from VS Code needs an Anthropic API key from the Claude Console (sk-ant-api…).';
+    }
+    return undefined;
+}
+
+/**
+ * Asks for the Anthropic API key used in passthrough and stores it for the
+ * endpoint. Returns undefined when the prompt is dismissed.
+ */
+export async function promptForAnthropicKey(
+    context: vscode.ExtensionContext,
+    baseUrl: string
+): Promise<string | undefined> {
+    const apiKey = await vscode.window.showInputBox({
+        title: 'Tetrate Agent Router: passthrough',
+        prompt: `Enter your own Anthropic API key for passthrough via ${hostOf(baseUrl)}. Anthropic bills its usage to your Anthropic account. Keys are created in the Claude Console at platform.claude.com.`,
+        placeHolder: 'sk-ant-api...',
+        password: true,
+        ignoreFocusOut: true,
+        validateInput: validateAnthropicKey,
+    });
+    // Re-checked here because showInputBox stubs in tests skip validateInput.
+    if (apiKey === undefined || validateAnthropicKey(apiKey) !== undefined) {
+        return undefined;
+    }
+    await context.secrets.store(anthropicKeySecretName(baseUrl), apiKey.trim());
+    return apiKey.trim();
+}
+
 export async function getApiKey(
     context: vscode.ExtensionContext,
     baseUrl: string

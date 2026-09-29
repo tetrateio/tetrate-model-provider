@@ -51,8 +51,18 @@ export function costOf(
 
 export type ModelTotals = RequestUsage & {
     requests: number;
+    /** Billed through Agent Router; passthrough is counted separately. */
     cost: number;
     unpricedRequests: number;
+    /**
+     * API-rate estimate of passthrough requests, which the user's own
+     * Anthropic account pays for. Kept apart from `cost` for the same reason
+     * the gateway keeps it out of budgets: it is not Agent Router spend.
+     */
+    passthroughCost: number;
+    passthroughRequests: number;
+    /** Passthrough requests whose model has no known price. */
+    passthroughUnpricedRequests: number;
 };
 
 /** Timing and outcome of one request, alongside its token counts. */
@@ -69,6 +79,8 @@ export type RequestMeta = {
      * a model-name override.
      */
     servedBy?: string;
+    /** Sent in passthrough mode: billed by Anthropic, not Agent Router. */
+    passthrough?: boolean;
 };
 
 /** What subscribers receive for each completed request. */
@@ -107,14 +119,23 @@ export class UsageTracker {
             reasoningTokens: 0,
             cost: 0,
             unpricedRequests: 0,
+            passthroughCost: 0,
+            passthroughRequests: 0,
+            passthroughUnpricedRequests: 0,
         };
         totals.requests += 1;
         totals.inputTokens += usage.inputTokens;
         totals.cachedInputTokens += usage.cachedInputTokens;
         totals.outputTokens += usage.outputTokens;
         totals.reasoningTokens += usage.reasoningTokens;
-        totals.cost += cost ?? 0;
-        totals.unpricedRequests += cost === undefined ? 1 : 0;
+        if (meta?.passthrough) {
+            totals.passthroughRequests += 1;
+            totals.passthroughCost += cost ?? 0;
+            totals.passthroughUnpricedRequests += cost === undefined ? 1 : 0;
+        } else {
+            totals.cost += cost ?? 0;
+            totals.unpricedRequests += cost === undefined ? 1 : 0;
+        }
         this.byModel.set(modelId, totals);
 
         if (meta?.firstOutputMs !== undefined) {
@@ -180,6 +201,15 @@ export class UsageTracker {
         return sum(this.byModel, (totals) => totals.cost);
     }
 
+    /** Estimated API-rate cost of passthrough requests; not Agent Router spend. */
+    get totalPassthroughCost(): number {
+        return sum(this.byModel, (totals) => totals.passthroughCost);
+    }
+
+    get passthroughRequestCount(): number {
+        return sum(this.byModel, (totals) => totals.passthroughRequests);
+    }
+
     /** True when at least one request could not be priced. */
     get hasUnpricedRequests(): boolean {
         return [...this.byModel.values()].some(
@@ -195,6 +225,11 @@ export class UsageTracker {
     headline(): string {
         if (this.requestCount === 0) {
             return 'no requests';
+        }
+        // Only passthrough so far: nothing was billed through Agent Router,
+        // and a $0.00 headline would read as broken tracking.
+        if (this.passthroughRequestCount === this.requestCount) {
+            return `${formatTokens(this.totalTokens)} tokens`;
         }
         if (this.totalCost > 0 || !this.hasUnpricedRequests) {
             return `${formatCost(this.totalCost)}${this.hasUnpricedRequests ? '+' : ''}`;
@@ -226,7 +261,13 @@ export class UsageTracker {
                 ? ' (some requests have no known price)'
                 : ''
         }`;
-        return [...lines, total];
+        const passthrough =
+            this.passthroughRequestCount > 0
+                ? [
+                      `Passthrough: ${this.passthroughRequestCount} request(s), ≈ ${formatCost(this.totalPassthroughCost)} at API rates, billed by Anthropic and not included above`,
+                  ]
+                : [];
+        return [...lines, total, ...passthrough];
     }
 }
 
@@ -308,10 +349,22 @@ function describeTotals(modelId: string, totals: ModelTotals): string {
         totals.reasoningTokens > 0
             ? ` incl. ${formatTokens(totals.reasoningTokens)} reasoning`
             : '';
-    const price =
-        totals.unpricedRequests === totals.requests
-            ? 'price unknown'
-            : formatCost(totals.cost);
+    const billedRequests = totals.requests - totals.passthroughRequests;
+    const billed =
+        billedRequests === 0
+            ? undefined
+            : totals.unpricedRequests === billedRequests
+              ? 'price unknown'
+              : formatCost(totals.cost);
+    const passthrough =
+        totals.passthroughRequests > 0
+            ? `${totals.passthroughRequests} passthrough ${
+                  totals.passthroughUnpricedRequests === totals.passthroughRequests
+                      ? 'price unknown'
+                      : `≈ ${formatCost(totals.passthroughCost)}`
+              }`
+            : undefined;
+    const price = [billed, passthrough].filter(Boolean).join(', ');
     return `${modelId}: ${totals.requests} request(s), ${formatTokens(totals.inputTokens)} in${cached} + ${formatTokens(totals.outputTokens)} out${reasoning}, ${price}`;
 }
 

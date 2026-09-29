@@ -26,6 +26,8 @@ export type StatusInput = {
     gateway?: GatewayStatus;
     /** Per-provider health from /v1/status, when the gateway serves it. */
     providerReport?: ProviderReport;
+    /** Whether an Anthropic passthrough key is stored for the endpoint. */
+    anthropicKeyStored?: boolean;
     now?: number;
 };
 
@@ -102,6 +104,13 @@ export async function buildStatusReport(
         `Model filter: ${describeCount(config.modelFilter.length, 'pattern')}`,
         `Model overrides: ${describeCount(Object.keys(config.modelOverrides).length, 'entry', 'entries')}`,
         `Request headers: ${describeCount(Object.keys(config.requestHeaders).length, 'header')}`,
+        `Passthrough: ${
+            !config.passthroughEnabled
+                ? 'off'
+                : input.anthropicKeyStored
+                  ? 'on for Claude models, Anthropic key stored'
+                  : 'on, but no Anthropic key is stored, so Claude models use the managed path'
+        }`,
     ];
 
     return { lines, summary, healthy };

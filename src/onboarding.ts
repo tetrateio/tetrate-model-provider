@@ -25,13 +25,63 @@ export type ProbeResult =
  * since the endpoint's own error text ("invalid API key", "model not found")
  * is more actionable than anything synthesized here.
  */
+/**
+ * The passthrough counterpart of probeCompletion: one minimal Anthropic
+ * Messages call with the user's Anthropic key in `x-api-key` and the Agent
+ * Router key in `x-tars-api-key`, exactly as a passthrough request carries
+ * them. `messagesBaseUrl` is the gateway without its `/v1` segment.
+ */
+export async function probePassthrough(options: {
+    messagesBaseUrl: string;
+    apiKey: string;
+    anthropicKey: string;
+    headers: Record<string, string>;
+    modelId: string;
+}): Promise<ProbeResult> {
+    return probe(`${options.messagesBaseUrl}/v1/messages`, options.modelId, {
+        headers: {
+            ...options.headers,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            'anthropic-version': '2023-06-01',
+            'x-api-key': options.anthropicKey,
+            'x-tars-api-key': options.apiKey,
+        },
+        body: {
+            model: options.modelId,
+            max_tokens: 1,
+            messages: [{ role: 'user', content: 'ping' }],
+        },
+    });
+}
+
 export async function probeCompletion(options: {
     baseUrl: string;
     apiKey: string;
     headers: Record<string, string>;
     modelId: string;
 }): Promise<ProbeResult> {
-    const url = `${options.baseUrl}/chat/completions`;
+    return probe(`${options.baseUrl}/chat/completions`, options.modelId, {
+        headers: {
+            ...options.headers,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            Authorization: `Bearer ${options.apiKey}`,
+        },
+        body: {
+            model: options.modelId,
+            messages: [{ role: 'user', content: 'ping' }],
+            max_tokens: 1,
+            stream: false,
+        },
+    });
+}
+
+async function probe(
+    url: string,
+    modelId: string,
+    request: { headers: Record<string, string>; body: object }
+): Promise<ProbeResult> {
     const controller = new AbortController();
     // Neither `fetch` nor VS Code imposes a deadline of its own, so a stalled
     // proxy would otherwise leave the probe spinning forever. The abort reason
@@ -48,27 +98,13 @@ export async function probeCompletion(options: {
     try {
         const response = await fetch(url, {
             method: 'POST',
-            headers: {
-                ...options.headers,
-                'Content-Type': 'application/json',
-                Accept: 'application/json',
-                Authorization: `Bearer ${options.apiKey}`,
-            },
-            body: JSON.stringify({
-                model: options.modelId,
-                messages: [{ role: 'user', content: 'ping' }],
-                max_tokens: 1,
-                stream: false,
-            }),
+            headers: request.headers,
+            body: JSON.stringify(request.body),
             signal: controller.signal,
         });
 
         if (response.ok) {
-            return {
-                ok: true,
-                modelId: options.modelId,
-                ms: Date.now() - startedAt,
-            };
+            return { ok: true, modelId, ms: Date.now() - startedAt };
         }
 
         // The body usually carries the endpoint's own explanation; losing it

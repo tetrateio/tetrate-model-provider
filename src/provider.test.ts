@@ -1,9 +1,12 @@
+import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 
 import {
+    adviceFor,
     FIRST_OUTPUT_TIMEOUT_MS,
+    isAnthropicModel,
     parseArguments,
     STREAM_IDLE_TIMEOUT_MS,
     TetrateChatModelProvider,
@@ -127,6 +130,14 @@ describe('ToolCallAccumulator', () => {
         accumulator.add(undefined);
 
         expect(accumulator.finish()).toEqual([]);
+    });
+});
+
+describe('isAnthropicModel', () => {
+    it('recognizes the anthropic family and Claude ids', () => {
+        expect(isAnthropicModel({ id: 'x', family: 'anthropic' })).toBe(true);
+        expect(isAnthropicModel({ id: 'claude-opus-5', family: 'other' })).toBe(true);
+        expect(isAnthropicModel({ id: 'gpt-5.6-terra', family: 'openai' })).toBe(false);
     });
 });
 
@@ -957,6 +968,228 @@ describe('provideLanguageModelChatResponse', () => {
     });
 });
 
+describe('passthrough', () => {
+    const { configValues } = vscode as unknown as {
+        configValues: Record<string, unknown>;
+    };
+    afterEach(() => {
+        delete configValues['passthrough.enabled'];
+        delete configValues.baseUrl;
+    });
+
+    const messageEvents = (
+        model = 'claude-test'
+    ): Anthropic.Messages.RawMessageStreamEvent[] =>
+        [
+            {
+                type: 'message_start',
+                message: {
+                    model,
+                    usage: {
+                        input_tokens: 100,
+                        cache_read_input_tokens: 900,
+                        cache_creation_input_tokens: 0,
+                        output_tokens: 1,
+                    },
+                },
+            },
+            {
+                type: 'content_block_start',
+                index: 0,
+                content_block: { type: 'text', text: '' },
+            },
+            {
+                type: 'content_block_delta',
+                index: 0,
+                delta: { type: 'text_delta', text: 'Hi' },
+            },
+            {
+                type: 'content_block_start',
+                index: 1,
+                content_block: {
+                    type: 'tool_use',
+                    id: 'toolu_1',
+                    name: 'read_file',
+                    input: {},
+                },
+            },
+            {
+                type: 'content_block_delta',
+                index: 1,
+                delta: { type: 'input_json_delta', partial_json: '{"path":"a.ts"}' },
+            },
+            {
+                type: 'message_delta',
+                delta: { stop_reason: 'tool_use' },
+                usage: { output_tokens: 20 },
+            },
+            { type: 'message_stop' },
+        ] as unknown as Anthropic.Messages.RawMessageStreamEvent[];
+
+    it('sends an Anthropic model through the Messages API with both credentials apart', async () => {
+        configValues['passthrough.enabled'] = true;
+        configValues.baseUrl = 'https://router.tare-acme.tetrate.ai/v1';
+        const h = harness(
+            { steps: [] },
+            { anthropicKey: 'sk-ant-api03-own', anthropicSteps: messageEvents() }
+        );
+
+        await h.run({
+            tools: [{ name: 'read_file', description: 'Reads', inputSchema: { type: 'object' } }],
+        });
+
+        expect(h.create).not.toHaveBeenCalled();
+        expect(h.anthropicClientOptions[0]).toMatchObject({
+            apiKey: 'sk-ant-api03-own',
+            authToken: null,
+            baseURL: 'https://router.tare-acme.tetrate.ai',
+            defaultHeaders: expect.objectContaining({
+                'x-tars-api-key': 'sk-test',
+            }) as unknown,
+        });
+        const body = h.anthropicRequests[0]?.body;
+        expect(body).toMatchObject({
+            model: MODEL.id,
+            stream: true,
+            max_tokens: MODEL.maxOutputTokens,
+            tool_choice: { type: 'auto' },
+        });
+        expect(h.anthropicRequests[0]?.headers?.['X-Request-ID']).toMatch(/^[0-9a-f-]{36}$/);
+        expect(texts(h.parts)).toEqual(['Hi']);
+        expect(h.parts[1]).toMatchObject({
+            callId: 'toolu_1',
+            name: 'read_file',
+            input: { path: 'a.ts' },
+        });
+    });
+
+    it('books passthrough usage apart from Agent Router spend', async () => {
+        configValues['passthrough.enabled'] = true;
+        const h = harness(
+            { steps: [] },
+            {
+                anthropicKey: 'sk-ant-api03-own',
+                anthropicSteps: messageEvents(),
+                storedCatalog: {
+                    fetchedAt: Date.now(),
+                    models: [
+                        {
+                            model: 'claude-test',
+                            inputTokensPricePer1M: 1_000,
+                            outputTokensPricePer1M: 1_000,
+                        },
+                    ],
+                },
+            }
+        );
+        const listener = vi.fn();
+        h.provider.usage.subscribe(listener);
+
+        await h.run();
+
+        expect(listener).toHaveBeenCalledWith(
+            expect.objectContaining({
+                usage: {
+                    inputTokens: 1000,
+                    cachedInputTokens: 900,
+                    outputTokens: 20,
+                    reasoningTokens: 0,
+                },
+                meta: expect.objectContaining({
+                    passthrough: true,
+                    finishReason: 'tool_calls',
+                }) as unknown,
+            })
+        );
+        expect(h.provider.usage.totalCost).toBe(0);
+        expect(h.provider.usage.totalPassthroughCost).toBeGreaterThan(0);
+        expect(h.log.info).toHaveBeenCalledWith(
+            expect.stringContaining('billed by Anthropic')
+        );
+    });
+
+    it('keeps the managed path when passthrough is off', async () => {
+        const h = harness(
+            { steps: [finish('stop')] },
+            { anthropicKey: 'sk-ant-api03-own', anthropicSteps: messageEvents() }
+        );
+
+        await h.run();
+
+        expect(h.create).toHaveBeenCalled();
+        expect(h.anthropicRequests).toHaveLength(0);
+    });
+
+    it('keeps the managed path for a model that is not Anthropic', async () => {
+        configValues['passthrough.enabled'] = true;
+        const h = harness(
+            { steps: [finish('stop')] },
+            { anthropicKey: 'sk-ant-api03-own', anthropicSteps: messageEvents() }
+        );
+
+        await h.provider.provideLanguageModelChatResponse(
+            { ...MODEL, id: 'gpt-5.6-terra', family: 'openai' },
+            [user('hello')],
+            { toolMode: vscode.LanguageModelChatToolMode.Auto },
+            { report: () => undefined },
+            h.token
+        );
+
+        expect(h.create).toHaveBeenCalled();
+        expect(h.anthropicRequests).toHaveLength(0);
+    });
+
+    it('keeps the managed path when no Anthropic key is stored', async () => {
+        configValues['passthrough.enabled'] = true;
+        const h = harness({ steps: [finish('stop')] });
+
+        await h.run();
+
+        expect(h.create).toHaveBeenCalled();
+    });
+
+    it('lets a maxTokens override set max_tokens on the Messages request', async () => {
+        configValues['passthrough.enabled'] = true;
+        configValues.modelOverrides = { 'claude-*': { maxTokens: 2048, temperature: 1.5 } };
+        try {
+            const h = harness(
+                { steps: [] },
+                { anthropicKey: 'sk-ant-api03-own', anthropicSteps: messageEvents() }
+            );
+            await h.run();
+            // Anthropic caps temperature at 1.
+            expect(h.anthropicRequests[0]?.body).toMatchObject({
+                max_tokens: 2048,
+                temperature: 1,
+            });
+        } finally {
+            delete configValues.modelOverrides;
+        }
+    });
+});
+
+describe('adviceFor on the passthrough path', () => {
+    it('blames the Anthropic key for a forwarded 401', () => {
+        const error = new Anthropic.APIError(
+            401,
+            { type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } },
+            'invalid x-api-key',
+            new Headers()
+        );
+        expect(adviceFor(error)).toContain('Anthropic rejected the passthrough API key');
+    });
+
+    it('reads gateway codes nested under an Anthropic-shaped error body', () => {
+        const error = new Anthropic.APIError(
+            404,
+            { type: 'error', error: { code: 'model_not_routed', message: 'no route' } },
+            'no route',
+            new Headers()
+        );
+        expect(adviceFor(error)).toContain('model grants');
+    });
+});
+
 const MODEL: vscode.LanguageModelChatInformation = {
     id: 'claude-test',
     name: 'Claude Test',
@@ -1141,6 +1374,35 @@ function fakeClient(behaviour: Behaviour) {
     };
 }
 
+type AnthropicEvent = Anthropic.Messages.RawMessageStreamEvent;
+
+/** The Messages counterpart of fakeClient, streaming raw SSE events. */
+function fakeAnthropicClient(steps: AnthropicEvent[]) {
+    const requests: Request[] = [];
+    const create = vi.fn(
+        (
+            body: Record<string, unknown>,
+            options: { signal: AbortSignal; headers?: Record<string, string> }
+        ) => {
+            requests.push({
+                body,
+                signal: options.signal,
+                headers: options.headers,
+            });
+            async function* events(): AsyncGenerator<AnthropicEvent> {
+                for (const event of steps) {
+                    yield event;
+                }
+            }
+            return Promise.resolve(events());
+        }
+    );
+    return {
+        client: { messages: { create } } as unknown as Anthropic,
+        requests,
+    };
+}
+
 function cancellationToken() {
     const listeners = new Set<(e: unknown) => unknown>();
     const token = {
@@ -1170,6 +1432,10 @@ type HarnessOptions = {
     /** What the stubbed health triage reports. */
     gatewayStatus?: import('./health').GatewayStatus;
     providerReport?: import('./health').ProviderReport;
+    /** Stored under the Anthropic passthrough secret name, when set. */
+    anthropicKey?: string;
+    /** What the scripted Messages client streams. */
+    anthropicSteps?: AnthropicEvent[];
 };
 
 function harness(behaviour: Behaviour, options: HarnessOptions = {}) {
@@ -1177,19 +1443,33 @@ function harness(behaviour: Behaviour, options: HarnessOptions = {}) {
     const fake = fakeClient(behaviour);
     const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const context = {
-        secrets: { get: vi.fn(() => Promise.resolve(storedKey)) },
+        secrets: {
+            get: vi.fn((name: string) =>
+                Promise.resolve(
+                    name.startsWith('tetrate-model-provider.anthropicApiKey')
+                        ? options.anthropicKey
+                        : storedKey
+                )
+            ),
+        },
         globalState: {
             get: () => options.storedCatalog,
             update: () => Promise.resolve(),
         },
     };
     const clientOptions: unknown[] = [];
+    const anthropicClientOptions: unknown[] = [];
+    const fakeAnthropic = fakeAnthropicClient(options.anthropicSteps ?? []);
     const provider = new TetrateChatModelProvider(
         context as unknown as vscode.ExtensionContext,
         log as unknown as vscode.LogOutputChannel,
         (createOptions) => {
             clientOptions.push(createOptions);
             return fake.client;
+        },
+        (anthropicOptions) => {
+            anthropicClientOptions.push(anthropicOptions);
+            return fakeAnthropic.client;
         },
         // Stubbed so a failing test request never triages over the network.
         {
@@ -1228,6 +1508,8 @@ function harness(behaviour: Behaviour, options: HarnessOptions = {}) {
         create: fake.create,
         clientOptions,
         requests: fake.requests,
+        anthropicClientOptions,
+        anthropicRequests: fakeAnthropic.requests,
     };
 }
 

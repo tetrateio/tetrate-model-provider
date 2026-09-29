@@ -48,8 +48,8 @@ export function spendBackground(
 
 export type TooltipInput = {
     session: UsageTracker;
-    today: { cost: number; requests: number };
-    week: { cost: number; requests: number };
+    today: { cost: number; requests: number; passthroughCost?: number };
+    week: { cost: number; requests: number; passthroughCost?: number };
     spendWarning: number;
 };
 
@@ -67,10 +67,7 @@ export function buildUsageTooltip(input: TooltipInput): vscode.MarkdownString {
         lines.push('| Model | Requests | Tokens | Cost |');
         lines.push('| :-- | --: | --: | --: |');
         for (const row of models.slice(0, TOOLTIP_MODEL_LIMIT)) {
-            const cost =
-                row.unpricedRequests === row.requests
-                    ? 'unknown'
-                    : formatCost(row.cost);
+            const cost = rowCost(row);
             lines.push(
                 `| ${row.modelId} | ${row.requests} | ${formatTokens(row.inputTokens + row.outputTokens)} | ${cost} |`
             );
@@ -90,6 +87,12 @@ export function buildUsageTooltip(input: TooltipInput): vscode.MarkdownString {
     lines.push(
         `Today: ${formatCost(today.cost)} (${today.requests} request(s)) · Last 7 days: ${formatCost(week.cost)}`
     );
+    if ((week.passthroughCost ?? 0) > 0) {
+        lines.push('');
+        lines.push(
+            `Passthrough, billed by Anthropic: ≈ ${formatCost(today.passthroughCost ?? 0)} today · ≈ ${formatCost(week.passthroughCost ?? 0)} last 7 days`
+        );
+    }
     if (spendWarning > 0) {
         lines.push('');
         lines.push(
@@ -111,6 +114,39 @@ export function buildUsageTooltip(input: TooltipInput): vscode.MarkdownString {
         ],
     };
     return markdown;
+}
+
+/**
+ * A row's cost cell: Agent Router spend, with any passthrough estimate named
+ * beside it rather than added in, since Anthropic bills that part.
+ */
+function rowCost(row: {
+    requests: number;
+    cost: number;
+    unpricedRequests: number;
+    passthroughCost?: number;
+    passthroughRequests?: number;
+    passthroughUnpricedRequests?: number;
+}): string {
+    const passthroughRequests = row.passthroughRequests ?? 0;
+    const billedRequests = row.requests - passthroughRequests;
+    const parts = [
+        ...(billedRequests > 0
+            ? [
+                  row.unpricedRequests === billedRequests
+                      ? 'unknown'
+                      : formatCost(row.cost),
+              ]
+            : []),
+        ...(passthroughRequests > 0
+            ? [
+                  (row.passthroughUnpricedRequests ?? 0) === passthroughRequests
+                      ? 'unknown passthrough'
+                      : `≈ ${formatCost(row.passthroughCost ?? 0)} passthrough`,
+              ]
+            : []),
+    ];
+    return parts.join(' + ');
 }
 
 export type DashboardData = {
@@ -317,7 +353,9 @@ export function renderUsageDashboard(
     <p class="note">
         Costs are estimated from the public catalog's prices; the Agent Router
         dashboard is the billing authority. Requests whose model has no known
-        price are counted but not priced.
+        price are counted but not priced. Passthrough requests are billed by
+        Anthropic to your own account; their ≈ figure is an API-rate estimate
+        and is not included in the Agent Router cost.
     </p>
 
     <script nonce="${nonce}">
@@ -326,6 +364,21 @@ export function renderUsageDashboard(
         const cost = (c) => c > 0 && c < 0.0001
             ? '<$0.0001'
             : '$' + c.toFixed(c >= 1 ? 2 : 4);
+        // Mirrors rowCost in usageView.ts: passthrough is named, not added.
+        const rowCost = (row) => {
+            const through = row.passthroughRequests || 0;
+            const billed = row.requests - through;
+            const parts = [];
+            if (billed > 0) {
+                parts.push(row.unpricedRequests === billed ? 'unknown' : cost(row.cost));
+            }
+            if (through > 0) {
+                parts.push((row.passthroughUnpricedRequests || 0) === through
+                    ? 'unknown passthrough'
+                    : '≈ ' + cost(row.passthroughCost || 0) + ' passthrough');
+            }
+            return parts.join(' + ');
+        };
 
         function fillTable(tbody, rows) {
             tbody.textContent = '';
@@ -348,9 +401,7 @@ export function renderUsageDashboard(
                     fmt(row.cachedInputTokens),
                     fmt(row.outputTokens),
                     fmt(row.reasoningTokens),
-                    row.unpricedRequests === row.requests
-                        ? 'unknown'
-                        : cost(row.cost),
+                    rowCost(row),
                 ];
                 for (const value of cells) {
                     const td = document.createElement('td');

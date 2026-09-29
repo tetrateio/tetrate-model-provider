@@ -11,6 +11,7 @@ const config: ProviderConfig = {
     profiles: {},
     spendWarning: 0,
     sessionAttribution: false,
+    passthroughEnabled: false,
 };
 
 const base: StatusInput = {
@@ -37,6 +38,7 @@ describe('buildStatusReport', () => {
             'Model filter: (none)',
             'Model overrides: (none)',
             'Request headers: (none)',
+            'Passthrough: off',
         ]);
     });
 
@@ -167,6 +169,23 @@ describe('buildStatusReport', () => {
         });
         expect(report.lines[6]).toBe('Model overrides: 1 entry');
         expect(report.lines[7]).toBe('Request headers: 2 headers');
+    });
+});
+
+describe('passthrough line', () => {
+    it('names a missing Anthropic key when passthrough is on', async () => {
+        const on = { ...config, passthroughEnabled: true };
+        const missing = await buildStatusReport({ ...base, config: on });
+        expect(missing.lines.at(-1)).toContain('no Anthropic key is stored');
+
+        const stored = await buildStatusReport({
+            ...base,
+            config: on,
+            anthropicKeyStored: true,
+        });
+        expect(stored.lines.at(-1)).toBe(
+            'Passthrough: on for Claude models, Anthropic key stored'
+        );
     });
 });
 

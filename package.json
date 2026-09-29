@@ -3,7 +3,7 @@
     "publisher": "tetrate",
     "displayName": "Tetrate Agent Router Model Provider",
     "description": "Provides language models from Tetrate Agent Router Service to VS Code chat and to other extensions",
-    "version": "0.5.0",
+    "version": "0.6.0",
     "license": "Apache-2.0",
     "icon": "images/icon.png",
     "galleryBanner": {
@@ -128,6 +128,14 @@
                 "command": "tetrate-model-provider.openDashboard",
                 "title": "Open Usage Dashboard",
                 "icon": "$(graph)"
+            },
+            {
+                "command": "tetrate-model-provider.setAnthropicKey",
+                "title": "Tetrate Agent Router: Set Anthropic API Key for Passthrough"
+            },
+            {
+                "command": "tetrate-model-provider.clearAnthropicKey",
+                "title": "Tetrate Agent Router: Clear Anthropic API Key"
             }
         ],
         "menus": {
@@ -272,6 +280,12 @@
                     "default": false,
                     "markdownDescription": "Send a random per-window `agent-session-id` header with every request. The gateway records custom headers as OpenTelemetry span attributes, so one VS Code session's traffic can be grouped in the Console's traces. Off by default because it sends an extra identifier with each request."
                 },
+                "tetrate-model-provider.passthrough.enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "scope": "machine",
+                    "markdownDescription": "Send Anthropic models in **passthrough mode**: requests go to the gateway's Anthropic Messages API authenticated upstream with your own Anthropic API key, which Anthropic bills, while the Agent Router key routes and attributes them. Needs an Agent Router Enterprise deployment with passthrough set up by an administrator, and a key stored with **Set Anthropic API Key for Passthrough**. Other models are unaffected.\n\nMachine-scoped: settable in User settings only, because it changes which account pays."
+                },
                 "tetrate-model-provider.spendWarning": {
                     "type": "number",
                     "minimum": 0,
@@ -364,6 +378,7 @@
         "publish": "vsce publish --no-dependencies"
     },
     "dependencies": {
+        "@anthropic-ai/sdk": "^0.129.0",
         "openai": "^6.9.0"
     },
     "devDependencies": {

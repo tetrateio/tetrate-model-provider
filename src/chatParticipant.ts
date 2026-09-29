@@ -13,8 +13,8 @@ import { formatCost } from './usage';
 export type ParticipantDeps = {
     /** Session summary lines, one per model plus a total. */
     usageLines(): string[];
-    today(): { cost: number; requests: number };
-    week(): { cost: number; requests: number };
+    today(): { cost: number; requests: number; passthroughCost?: number };
+    week(): { cost: number; requests: number; passthroughCost?: number };
     listModels(): Promise<readonly vscode.LanguageModelChatInformation[]>;
     priceOf(
         modelId: string
@@ -72,6 +72,9 @@ function respondUsage(
     stream.markdown(
         `**Today:** ${formatCost(today.cost)} across ${today.requests} request(s)\n\n` +
             `**Last 7 days:** ${formatCost(week.cost)} across ${week.requests} request(s)\n\n` +
+            ((week.passthroughCost ?? 0) > 0
+                ? `**Passthrough, billed by Anthropic:** ≈ ${formatCost(today.passthroughCost ?? 0)} today, ≈ ${formatCost(week.passthroughCost ?? 0)} over 7 days\n\n`
+                : '') +
             '**This session:**\n\n'
     );
     for (const line of deps.usageLines()) {

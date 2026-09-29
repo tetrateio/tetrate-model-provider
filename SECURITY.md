@@ -15,7 +15,9 @@ The Agent Router service itself is out of scope here; report those to Tetrate di
 ## Design notes
 
 - The API key lives in VS Code [secret storage](https://code.visualstudio.com/api/references/vscode-api#SecretStorage), never in a settings file. On macOS that is the system Keychain. Keys are scoped per endpoint host, so a key entered for one host is never sent to another.
+- The optional Anthropic API key for passthrough is stored the same way, under its own per-host secret name, and is sent only to the configured base URL, in `x-api-key` on Claude requests while passthrough is on. The gateway forwards it to Anthropic. The extension refuses Claude subscription tokens, which Anthropic permits only in its own applications.
 - `baseUrl` and `requestHeaders` decide where the key is sent, so both are machine-scoped and cannot be set from a workspace or folder `settings.json`. Opening an untrusted repository cannot redirect the key.
-- An `Authorization` entry in `requestHeaders` is discarded. That header is always derived from the stored key.
+- `passthrough.enabled` is machine-scoped too, since it decides which account pays for Claude requests.
+- `Authorization`, `x-api-key`, and `x-tars-api-key` entries in `requestHeaders` are discarded. Those headers are always derived from the stored keys.
 - The output channel logs model counts, configuration changes, and failure status codes. It never logs the key or message content.
 - One unauthenticated request goes to `router.tetrate.ai/api/public/models` for model metadata. It carries no key and no prompt content.

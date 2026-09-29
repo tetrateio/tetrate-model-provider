@@ -51,6 +51,7 @@ function makeProvider(overrides: Partial<TreeDeps> = {}) {
         latencyOf: () => undefined,
         gatewayStatus: () => Promise.resolve({ reachable: true }),
         providerReport: () => Promise.resolve(undefined),
+        hasAnthropicKey: () => Promise.resolve(false),
         session: new UsageTracker(),
         history: new UsageHistory(makeStore()),
         ...overrides,
@@ -100,9 +101,27 @@ describe('AgentRouterTreeProvider', () => {
             'tetrate-model-provider.setApiKey'
         );
         expect(items[3]?.description).toContain('210 entries');
-        expect(items[4]?.label).toBe('Providers');
-        expect(items[5]?.label).toBe('Profiles');
-        expect(items[5]?.contextValue).toBe('profiles');
+        expect(items[4]?.label).toBe('Passthrough');
+        expect(items[4]?.description).toBe('off');
+        expect(items[4]?.command?.command).toBe(
+            'tetrate-model-provider.setAnthropicKey'
+        );
+        expect(items[5]?.label).toBe('Providers');
+        expect(items[6]?.label).toBe('Profiles');
+        expect(items[6]?.contextValue).toBe('profiles');
+    });
+
+    it('warns when passthrough is on without an Anthropic key', async () => {
+        configValues['passthrough.enabled'] = true;
+        const tree = makeProvider();
+        const children = await tree.getChildren({ kind: 'root', id: 'endpoint' });
+        const row = tree.getTreeItem(children[4]!);
+        expect(row.description).toBe('on, but no Anthropic key is stored');
+        expect((row.iconPath as vscode.ThemeIcon).id).toBe('warning');
+
+        const keyed = makeProvider({ hasAnthropicKey: () => Promise.resolve(true) });
+        const [, , , , on] = await keyed.getChildren({ kind: 'root', id: 'endpoint' });
+        expect(keyed.getTreeItem(on!).description).toBe('on for Claude models');
     });
 
     it('marks a gateway that reports not serving', async () => {

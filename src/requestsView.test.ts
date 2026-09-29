@@ -65,6 +65,15 @@ describe('RequestsTreeProvider', () => {
         expect(direct.description).not.toContain('via');
     });
 
+    it('marks a passthrough request and its estimate', () => {
+        const provider = new RequestsTreeProvider(new RequestLog());
+        const item = provider.getTreeItem(record({ passthrough: true }));
+        expect(item.description).toBe(
+            '1,200 → 34 · ≈ $0.0031 · 4.2s · passthrough'
+        );
+        expect(item.tooltip).toContain('billed by Anthropic');
+    });
+
     it('gates the copy action on rows that carry a request id', () => {
         const provider = new RequestsTreeProvider(new RequestLog());
         expect(

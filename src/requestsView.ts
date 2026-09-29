@@ -38,11 +38,15 @@ export class RequestsTreeProvider
             record.modelId,
             vscode.TreeItemCollapsibleState.None
         );
-        item.description = `${formatTokens(record.inputTokens)} → ${formatTokens(record.outputTokens)} · ${
-            record.cost === undefined ? 'unpriced' : formatCost(record.cost)
-        } · ${formatSeconds(record.durationMs)}${
-            record.servedBy ? ` · via ${record.servedBy}` : ''
-        }`;
+        const cost =
+            record.cost === undefined
+                ? 'unpriced'
+                : record.passthrough
+                  ? `≈ ${formatCost(record.cost)}`
+                  : formatCost(record.cost);
+        item.description = `${formatTokens(record.inputTokens)} → ${formatTokens(record.outputTokens)} · ${cost} · ${formatSeconds(record.durationMs)}${
+            record.passthrough ? ' · passthrough' : ''
+        }${record.servedBy ? ` · via ${record.servedBy}` : ''}`;
         item.tooltip = [
             new Date(record.at).toLocaleTimeString(),
             record.modelId,
@@ -51,6 +55,11 @@ export class RequestsTreeProvider
             ...(record.servedBy
                 ? [
                       `Served by ${record.servedBy} (fallback or override), not ${record.modelId} directly.`,
+                  ]
+                : []),
+            ...(record.passthrough
+                ? [
+                      'Passthrough: authenticated with your own Anthropic API key and billed by Anthropic. The cost shown is an API-rate estimate.',
                   ]
                 : []),
             `${formatTokens(record.inputTokens)} input tokens, ${formatTokens(record.outputTokens)} output tokens`,

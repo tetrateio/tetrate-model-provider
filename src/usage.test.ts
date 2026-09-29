@@ -235,6 +235,46 @@ describe('UsageTracker', () => {
     });
 });
 
+describe('passthrough accounting', () => {
+    const pricing = { inputPer1M: 2, outputPer1M: 10 };
+
+    it('estimates passthrough cost without adding it to Agent Router spend', () => {
+        const tracker = new UsageTracker();
+        tracker.record('claude', request({ inputTokens: 1_000_000 }), pricing, {
+            durationMs: 1,
+            passthrough: true,
+        });
+
+        expect(tracker.totalCost).toBe(0);
+        expect(tracker.totalPassthroughCost).toBeCloseTo(2);
+        expect(tracker.hasUnpricedRequests).toBe(false);
+        expect(tracker.headline()).toBe('1,000,000 tokens');
+        const lines = tracker.summarize();
+        expect(lines[0]).toContain('1 passthrough ≈ $2.00');
+        expect(lines.at(-1)).toContain('billed by Anthropic');
+    });
+
+    it('reports an unpriced passthrough model as unknown, not as zero', () => {
+        const tracker = new UsageTracker();
+        tracker.record('claude', request({ inputTokens: 10 }), undefined, {
+            durationMs: 1,
+            passthrough: true,
+        });
+        expect(tracker.summarize()[0]).toContain('1 passthrough price unknown');
+    });
+
+    it('headlines the billed cost once any managed request is booked', () => {
+        const tracker = new UsageTracker();
+        tracker.record('claude', request({ inputTokens: 1_000_000 }), pricing, {
+            durationMs: 1,
+            passthrough: true,
+        });
+        tracker.record('gpt', request({ inputTokens: 500_000 }), pricing);
+
+        expect(tracker.headline()).toBe('$1.00');
+    });
+});
+
 describe('ActivityTracker', () => {
     it('tracks a request from begin to end, oldest first', () => {
         const tracker = new ActivityTracker();
