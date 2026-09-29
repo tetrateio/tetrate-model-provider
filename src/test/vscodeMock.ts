@@ -207,9 +207,11 @@ export const workspace = {
 
 export const Uri = {
     parse: (value: string) => ({ toString: () => value }),
+    file: (path: string) => ({ fsPath: path, toString: () => path }),
 };
 
 export const env = {
+    remoteName: undefined as string | undefined,
     openExternal: () => Promise.resolve(true),
     clipboard: {
         writeText: () => Promise.resolve(),
@@ -236,6 +238,12 @@ export const window = {
         command: undefined as string | undefined,
         show() {},
         hide() {},
+        dispose() {},
+    }),
+    showTextDocument: () => Promise.resolve(undefined),
+    createTerminal: () => ({
+        show() {},
+        sendText() {},
         dispose() {},
     }),
     withProgress: <T>(_options: unknown, task: () => Thenable<T>) => task(),

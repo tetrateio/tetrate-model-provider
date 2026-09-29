@@ -7,6 +7,15 @@ import {
     peekPublicCatalog,
 } from './catalogCache';
 import { registerTetrateParticipant } from './chatParticipant';
+import { claudeConfigDir, describeClaudeCodeState } from './claudeCode';
+import {
+    type ClaudeCodeDeps,
+    claudeCodeState,
+    configureClaudeCodeFlow,
+    refreshClaudeCodeModels,
+    removeClaudeCodeFlow,
+    syncClaudeCodeKey,
+} from './claudeCodeCommands';
 import { showCommandCenter } from './commandCenter';
 import {
     CONFIG_SECTION,
@@ -159,16 +168,13 @@ export function activate(context: vscode.ExtensionContext) {
               models: readonly vscode.LanguageModelChatInformation[];
           }
         | undefined;
-    const listAllModels = async (): Promise<
+    const fetchAllModels = async (): Promise<
         readonly vscode.LanguageModelChatInformation[]
     > => {
         const config = getConfig();
         const key = await getApiKey(context, config.baseUrl);
         if (!key) {
             return [];
-        }
-        if (allModelsCache && Date.now() - allModelsCache.at < 15 * 60_000) {
-            return allModelsCache.models;
         }
         const [apiModels, catalog] = await Promise.all([
             fetchApiModels(config.baseUrl, key, config.requestHeaders),
@@ -180,6 +186,25 @@ export function activate(context: vscode.ExtensionContext) {
         });
         allModelsCache = { at: Date.now(), models };
         return models;
+    };
+    const listAllModels = async (): Promise<
+        readonly vscode.LanguageModelChatInformation[]
+    > => {
+        if (!(await getApiKey(context, getConfig().baseUrl))) {
+            return [];
+        }
+        if (allModelsCache && Date.now() - allModelsCache.at < 15 * 60_000) {
+            return allModelsCache.models;
+        }
+        return fetchAllModels();
+    };
+
+    const claudeDeps: ClaudeCodeDeps = {
+        store: context.globalState,
+        apiKey: (baseUrl) => getApiKey(context, baseUrl),
+        fetchModels: fetchAllModels,
+        configDir: () => claudeConfigDir(),
+        log,
     };
 
     // Health lookups are memoized briefly: the tree re-renders on every
@@ -243,6 +268,7 @@ export function activate(context: vscode.ExtensionContext) {
                 : undefined;
         },
         latencyOf: (modelId) => provider.usage.firstOutputStats(modelId),
+        claudeCodeState: () => claudeCodeState(claudeDeps),
         session: provider.usage,
         history,
     });
@@ -606,6 +632,27 @@ export function activate(context: vscode.ExtensionContext) {
         ),
 
         vscode.commands.registerCommand(
+            'tetrate-model-provider.configureClaudeCode',
+            async () => {
+                await configureClaudeCodeFlow(claudeDeps);
+                tree.refresh();
+            }
+        ),
+
+        vscode.commands.registerCommand(
+            'tetrate-model-provider.removeClaudeCodeConfig',
+            async () => {
+                await removeClaudeCodeFlow(claudeDeps);
+                tree.refresh();
+            }
+        ),
+
+        vscode.commands.registerCommand(
+            'tetrate-model-provider.refreshClaudeCodeModels',
+            () => refreshClaudeCodeModels(claudeDeps)
+        ),
+
+        vscode.commands.registerCommand(
             'tetrate-model-provider.copyRequestId',
             async (record?: { requestId?: string }) => {
                 if (!record?.requestId) {
@@ -700,6 +747,9 @@ export function activate(context: vscode.ExtensionContext) {
                 vscode.window.showInformationMessage(
                     'Reloading Agent Router models.'
                 );
+                // A refreshed catalog is the moment Claude Code's picker can
+                // go stale; quiet, because it acts only when configured.
+                void refreshClaudeCodeModels(claudeDeps, { quiet: true });
             }
         ),
 
@@ -740,6 +790,9 @@ export function activate(context: vscode.ExtensionContext) {
                         buildStatusReport({
                             gateway: await gatewayStatus(),
                             providerReport: await providerReport(),
+                            claudeCode: describeClaudeCodeState(
+                                await claudeCodeState(claudeDeps)
+                            ),
                             version: String(
                                 context.extension.packageJSON.version
                             ),
@@ -801,6 +854,13 @@ export function activate(context: vscode.ExtensionContext) {
                 provider.invalidate();
                 // A new spendWarning threshold changes the bar's colouring.
                 updateUsageBar();
+                if (
+                    event.affectsConfiguration(
+                        `${CONFIG_SECTION}.claudeCode.pickerModels`
+                    )
+                ) {
+                    void refreshClaudeCodeModels(claudeDeps, { quiet: true });
+                }
             }
         }),
 
@@ -810,6 +870,9 @@ export function activate(context: vscode.ExtensionContext) {
         context.secrets.onDidChange((event) => {
             if (event.key.startsWith(API_KEY_SECRET)) {
                 provider.invalidate();
+                // Claude Code holds its own copy of the key; a rotation or a
+                // clear has to reach it too, or it keeps a revoked key.
+                void syncClaudeCodeKey(claudeDeps).then(() => tree.refresh());
             }
         })
     );

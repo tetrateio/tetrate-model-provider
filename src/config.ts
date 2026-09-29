@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 
+import { PICKER_MODELS, type PickerModels } from './claudeCode';
+
 export const VENDOR = 'tetrate-agent-router';
 export const CONFIG_SECTION = 'tetrate-model-provider';
 
@@ -17,6 +19,8 @@ export type ProviderConfig = {
     spendWarning: number;
     /** Send a per-window agent-session-id header for trace attribution. */
     sessionAttribution: boolean;
+    /** Which models the Claude Code picker cache lists; see claudeCode.ts. */
+    claudeCodePickerModels: PickerModels;
 };
 
 /** Effort levels the OpenAI protocol accepts for `reasoning_effort`. */
@@ -57,7 +61,16 @@ export function getConfig(): ProviderConfig {
         ),
         spendWarning: sanitizeSpendWarning(config.get('spendWarning')),
         sessionAttribution: config.get('sessionAttribution') === true,
+        claudeCodePickerModels: sanitizePickerModels(
+            config.get('claudeCode.pickerModels')
+        ),
     };
+}
+
+function sanitizePickerModels(value: unknown): PickerModels {
+    return PICKER_MODELS.includes(value as PickerModels)
+        ? (value as PickerModels)
+        : 'anthropic';
 }
 
 /**

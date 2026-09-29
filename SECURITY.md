@@ -15,6 +15,7 @@ The Agent Router service itself is out of scope here; report those to Tetrate di
 ## Design notes
 
 - The API key lives in VS Code [secret storage](https://code.visualstudio.com/api/references/vscode-api#SecretStorage), never in a settings file. On macOS that is the system Keychain. Keys are scoped per endpoint host, so a key entered for one host is never sent to another.
+- **Configure Claude Code for Passthrough** is the one exception. After an explicit confirmation, it copies the key into Claude Code's `settings.json`, written with owner-only permissions, because that file is the only place Claude Code reads custom headers from. Removing the configuration, or clearing the key and accepting the prompt, takes the copy out again. The extension never reads, stores, or forwards the Claude subscription sign-in.
 - `baseUrl` and `requestHeaders` decide where the key is sent, so both are machine-scoped and cannot be set from a workspace or folder `settings.json`. Opening an untrusted repository cannot redirect the key.
 - An `Authorization` entry in `requestHeaders` is discarded. That header is always derived from the stored key.
 - The output channel logs model counts, configuration changes, and failure status codes. It never logs the key or message content.

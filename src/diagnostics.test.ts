@@ -11,6 +11,7 @@ const config: ProviderConfig = {
     profiles: {},
     spendWarning: 0,
     sessionAttribution: false,
+    claudeCodePickerModels: 'anthropic',
 };
 
 const base: StatusInput = {
@@ -167,6 +168,18 @@ describe('buildStatusReport', () => {
         });
         expect(report.lines[6]).toBe('Model overrides: 1 entry');
         expect(report.lines[7]).toBe('Request headers: 2 headers');
+    });
+});
+
+describe('Claude Code line', () => {
+    it('appends the Claude Code routing when supplied', async () => {
+        const report = await buildStatusReport({
+            ...base,
+            claudeCode: 'passthrough via this endpoint',
+        });
+        expect(report.lines.at(-1)).toBe(
+            'Claude Code: passthrough via this endpoint'
+        );
     });
 });
 

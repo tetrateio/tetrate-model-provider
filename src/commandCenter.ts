@@ -66,6 +66,10 @@ export function buildCommandCenterItems(
             label: '$(pulse) Connection status',
             commandId: `${COMMAND_PREFIX}showStatus`,
         },
+        {
+            label: '$(terminal) Configure Claude Code for passthrough',
+            commandId: `${COMMAND_PREFIX}configureClaudeCode`,
+        },
     ];
 }
 

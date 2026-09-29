@@ -26,6 +26,8 @@ export type StatusInput = {
     gateway?: GatewayStatus;
     /** Per-provider health from /v1/status, when the gateway serves it. */
     providerReport?: ProviderReport;
+    /** How Claude Code is routed, as describeClaudeCodeState phrases it. */
+    claudeCode?: string;
     now?: number;
 };
 
@@ -102,6 +104,7 @@ export async function buildStatusReport(
         `Model filter: ${describeCount(config.modelFilter.length, 'pattern')}`,
         `Model overrides: ${describeCount(Object.keys(config.modelOverrides).length, 'entry', 'entries')}`,
         `Request headers: ${describeCount(Object.keys(config.requestHeaders).length, 'header')}`,
+        ...(input.claudeCode ? [`Claude Code: ${input.claudeCode}`] : []),
     ];
 
     return { lines, summary, healthy };

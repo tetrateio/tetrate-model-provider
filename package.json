@@ -128,6 +128,19 @@
                 "command": "tetrate-model-provider.openDashboard",
                 "title": "Open Usage Dashboard",
                 "icon": "$(graph)"
+            },
+            {
+                "command": "tetrate-model-provider.configureClaudeCode",
+                "title": "Tetrate Agent Router: Configure Claude Code for Passthrough"
+            },
+            {
+                "command": "tetrate-model-provider.removeClaudeCodeConfig",
+                "title": "Tetrate Agent Router: Remove Claude Code Configuration",
+                "icon": "$(trash)"
+            },
+            {
+                "command": "tetrate-model-provider.refreshClaudeCodeModels",
+                "title": "Tetrate Agent Router: Refresh Claude Code Model Picker"
             }
         ],
         "menus": {
@@ -162,6 +175,11 @@
                 {
                     "command": "tetrate-model-provider.copyRequestId",
                     "when": "view == tetrate-model-provider.requests && viewItem == request-id",
+                    "group": "inline"
+                },
+                {
+                    "command": "tetrate-model-provider.removeClaudeCodeConfig",
+                    "when": "view == tetrate-model-provider.overview && viewItem == claude-code-configured",
                     "group": "inline"
                 }
             ]
@@ -271,6 +289,21 @@
                     "type": "boolean",
                     "default": false,
                     "markdownDescription": "Send a random per-window `agent-session-id` header with every request. The gateway records custom headers as OpenTelemetry span attributes, so one VS Code session's traffic can be grouped in the Console's traces. Off by default because it sends an extra identifier with each request."
+                },
+                "tetrate-model-provider.claudeCode.pickerModels": {
+                    "type": "string",
+                    "enum": [
+                        "anthropic",
+                        "all",
+                        "off"
+                    ],
+                    "enumDescriptions": [
+                        "List only Anthropic models, the ones passthrough bills to your Claude subscription.",
+                        "List every model the key reaches. Non-Anthropic models route on Agent Router's credentials and are billed there.",
+                        "Do not write Claude Code's model picker cache."
+                    ],
+                    "default": "anthropic",
+                    "markdownDescription": "Which models **Configure Claude Code for Passthrough** lists in Claude Code's `/model` picker. Passthrough gives Claude Code no credential to discover gateway models with, so the extension writes the picker cache itself. The cache format is internal to Claude Code and may change in any release."
                 },
                 "tetrate-model-provider.spendWarning": {
                     "type": "number",

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Configure Claude Code for Passthrough** sets up Claude Code's [passthrough mode](https://docs.tetrate.ai/agent-router-service/guides/coding-agents/claude-code/connect/) from the endpoint and key the extension already holds. Claude Code then signs in with the developer's own Claude subscription, and its traffic routes through the Agent Router. The command checks the key, writes the base URL and the `x-tars-api-key` header into Claude Code's user settings, backs up the previous file, and fills Claude Code's `/model` picker. A key rotation or a cleared key is offered to Claude Code too. **Remove Claude Code Configuration** undoes the change, and the Overview view gains a Claude Code row. The extension never reads or forwards the Claude sign-in. Models used from VS Code chat stay on the Agent Router key.
+- A `claudeCode.pickerModels` setting selects which models the Claude Code picker lists: Anthropic models only (the default), every model, or none.
+
 ## 0.5.0
 
 Usage visibility, a rich UI surface, and per-model control. One setting was added (`sessionAttribution`, off by default); no existing settings changed, and no action is needed on upgrade.

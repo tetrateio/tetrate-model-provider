@@ -51,6 +51,7 @@ function makeProvider(overrides: Partial<TreeDeps> = {}) {
         latencyOf: () => undefined,
         gatewayStatus: () => Promise.resolve({ reachable: true }),
         providerReport: () => Promise.resolve(undefined),
+        claudeCodeState: () => Promise.resolve('not-configured'),
         session: new UsageTracker(),
         history: new UsageHistory(makeStore()),
         ...overrides,
@@ -100,9 +101,29 @@ describe('AgentRouterTreeProvider', () => {
             'tetrate-model-provider.setApiKey'
         );
         expect(items[3]?.description).toContain('210 entries');
-        expect(items[4]?.label).toBe('Providers');
-        expect(items[5]?.label).toBe('Profiles');
-        expect(items[5]?.contextValue).toBe('profiles');
+        expect(items[4]?.label).toBe('Claude Code');
+        expect(items[4]?.description).toBe('not configured');
+        expect(items[4]?.command?.command).toBe(
+            'tetrate-model-provider.configureClaudeCode'
+        );
+        expect(items[4]?.contextValue).toBeUndefined();
+        expect(items[5]?.label).toBe('Providers');
+        expect(items[6]?.label).toBe('Profiles');
+        expect(items[6]?.contextValue).toBe('profiles');
+    });
+
+    it('offers removal on a Claude Code row that routes here', async () => {
+        const tree = makeProvider({
+            claudeCodeState: () => Promise.resolve('passthrough-stale-key'),
+        });
+        const children = await tree.getChildren({
+            kind: 'root',
+            id: 'endpoint',
+        });
+        const row = tree.getTreeItem(children[4]!);
+        expect(row.description).toBe('passthrough, key missing or out of date');
+        expect(row.contextValue).toBe('claude-code-configured');
+        expect((row.iconPath as vscode.ThemeIcon).id).toBe('warning');
     });
 
     it('marks a gateway that reports not serving', async () => {

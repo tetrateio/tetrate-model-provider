@@ -75,7 +75,7 @@ The same three steps are available as a walkthrough under **Help → Get Started
 
 ### Where the key is stored
 
-The key is held in VS Code [secret storage](https://code.visualstudio.com/api/references/vscode-api#SecretStorage), scoped to the endpoint host: `tetrate-model-provider.agentRouterApiKey:<host>`. It is never written to a settings file, a log, or the output channel. On macOS that means the system Keychain.
+The key is held in VS Code [secret storage](https://code.visualstudio.com/api/references/vscode-api#SecretStorage), scoped to the endpoint host: `tetrate-model-provider.agentRouterApiKey:<host>`. It is never written to a log or the output channel, and never to a settings file unless **Configure Claude Code for Passthrough** is run and confirmed; see [Claude Code passthrough](#claude-code-passthrough). On macOS that means the system Keychain.
 
 Scoping by host keeps each credential with its endpoint. When the base URL is switched between the hosted service and a self-hosted deployment, each host keeps its own key, and a key entered for one host is never sent to another. A key stored by a version before scoping serves as a fallback for any host until a scoped key is saved.
 
@@ -92,6 +92,7 @@ Secret storage is per-machine and does not sync across Settings Sync.
 | `tetrate-model-provider.profiles` | object | `{}` | machine | Named endpoints for the **Switch Endpoint** command. |
 | `tetrate-model-provider.sessionAttribution` | boolean | `false` | window | Send a per-window `agent-session-id` header, recorded by the gateway as a trace attribute. |
 | `tetrate-model-provider.spendWarning` | number | `0` | window | Warn once the day's estimated cost reaches this many dollars. `0` disables it. |
+| `tetrate-model-provider.claudeCode.pickerModels` | string | `anthropic` | window | Which models Claude Code's `/model` picker lists after passthrough is configured: `anthropic`, `all`, or `off`. |
 
 `baseUrl` and `requestHeaders` are machine-scoped, so they can be set in User settings but not in a workspace or folder `settings.json`. Both decide where the API key is sent, and a cloned repository must not be able to point it somewhere else. `modelFilter` only narrows the picker, so it stays settable per workspace.
 
@@ -209,6 +210,9 @@ Costs are estimates computed from the public catalog's current prices; the Agent
 | Tetrate Agent Router: Test Connection | Send a one-token completion and report the round trip. |
 | Tetrate Agent Router: Add Endpoint Profile | Name and store an endpoint for the Switch Endpoint command. |
 | Tetrate Agent Router: Remove Endpoint Profile | Remove a stored endpoint profile. |
+| Tetrate Agent Router: Configure Claude Code for Passthrough | Route Claude Code through the configured endpoint, billed to your own Claude subscription. |
+| Tetrate Agent Router: Remove Claude Code Configuration | Undo what Configure Claude Code wrote. |
+| Tetrate Agent Router: Refresh Claude Code Model Picker | Rewrite Claude Code's `/model` list from the current model list. |
 
 ## The Overview view
 
@@ -231,6 +235,27 @@ The extension registers a `@tetrate` participant in the chat view for operationa
 @tetrate /models vision under $1       offered models by capability, price, or name
 @tetrate /switch Staging               change to a named endpoint profile
 ```
+
+## Claude Code passthrough
+
+In [passthrough mode](https://docs.tetrate.ai/agent-router-service/guides/coding-agents/claude-code/connect/), Claude Code signs in with the developer's own Claude Max, Pro, or Team subscription, which Anthropic bills directly, while its traffic still routes through the Agent Router and appears in the Console's Request Logs labelled `passthrough`. It is an Enterprise feature, and an administrator has to [enable it for the project](https://docs.tetrate.ai/agent-router-enterprise/guides/operate-and-govern/manage-models-and-providers/enable-passthrough-for-claude-code/) first.
+
+**Tetrate Agent Router: Configure Claude Code for Passthrough** sets Claude Code up from the endpoint and key this extension already holds, the same way `tare integrate claude-code --passthrough` does. After a confirmation, it:
+
+1. Checks the key against the endpoint, and changes nothing if it is rejected.
+2. Writes the `env` block of Claude Code's user settings, `~/.claude/settings.json` (or the `CLAUDE_CONFIG_DIR` equivalent): `ANTHROPIC_BASE_URL` is the endpoint without its `/v1`, and `ANTHROPIC_CUSTOM_HEADERS` gains an `x-tars-api-key` line. Other headers and settings are kept. `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are removed from the block, because either would replace the subscription sign-in.
+3. Writes Claude Code's model picker cache and enables gateway model discovery, since passthrough gives Claude Code no credential to list gateway models itself. By default only Anthropic models are listed, as other models route on Agent Router's credentials; `claudeCode.pickerModels` changes that. The cache format is internal to Claude Code and may change in any release.
+4. Offers to run `claude /login` in a terminal.
+
+The previous settings file is saved alongside as `settings.json.bak-<timestamp>`, and the file is written with owner-only permissions. When the Agent Router key is replaced, the extension offers to update Claude Code's copy; when it is cleared, it offers to remove it. **Remove Claude Code Configuration** takes out exactly what was written and keeps any value edited by hand since. The Overview view shows the current state on a **Claude Code** row.
+
+Some limits are deliberate:
+
+- **The extension never touches the Claude sign-in.** Anthropic requires the subscription sign-in to complete through its own flow, and does not allow third-party tools to collect or forward it. Passthrough traffic therefore comes from Claude Code itself.
+- **Models used from VS Code chat or other extensions are not passed through.** They keep using the Agent Router key and are billed to the Agent Router account.
+- **The key is stored in plain text in Claude Code's settings file**, because that file is the only place Claude Code reads custom headers from.
+- **An `ANTHROPIC_API_KEY` exported in the shell still overrides the subscription.** The extension cannot see the shell environment, so unset it there.
+- **In a remote window, the local machine's Claude Code is configured**, since the extension runs locally.
 
 ## Using the models from another extension
 

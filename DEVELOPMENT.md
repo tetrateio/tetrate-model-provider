@@ -22,6 +22,8 @@ src/
 ├── profileCommands.ts  Add and remove endpoint profiles
 ├── commandCenter.ts    The status bar command menu
 ├── chatParticipant.ts  The @tetrate chat participant
+├── claudeCode.ts       Claude Code settings arithmetic for passthrough
+├── claudeCodeCommands.ts  Configure, remove, and refresh Claude Code
 ├── onboarding.ts       The Test Connection probe
 ├── diagnostics.ts      The Show Connection Status report
 └── test/

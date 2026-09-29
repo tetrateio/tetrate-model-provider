@@ -33,6 +33,7 @@ describe('buildCommandCenterItems', () => {
             'tetrate-model-provider.setApiKey',
             'tetrate-model-provider.testConnection',
             'tetrate-model-provider.showStatus',
+            'tetrate-model-provider.configureClaudeCode',
         ]);
     });
 

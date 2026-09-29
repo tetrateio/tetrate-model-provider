@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 
+import { type ClaudeCodeState, describeClaudeCodeState } from './claudeCode';
 import { CONFIG_SECTION, getConfig, isIncludedByFilter } from './config';
 import { formatAge } from './diagnostics';
 import {
@@ -28,6 +29,7 @@ export type TreeNode =
           tooltip?: string;
           icon?: string;
           command?: string;
+          contextValue?: string;
       }
     | { kind: 'profiles' }
     | { kind: 'profile'; name: string; url: string }
@@ -59,6 +61,8 @@ export type TreeDeps = {
     gatewayStatus(): Promise<GatewayStatus>;
     /** Per-provider health from /v1/status; undefined when not served. */
     providerReport(): Promise<ProviderReport | undefined>;
+    /** How Claude Code's settings route it relative to this endpoint. */
+    claudeCodeState(): Promise<ClaudeCodeState>;
     session: UsageTracker;
     history: UsageHistory;
 };
@@ -72,6 +76,22 @@ function gatewayIcon(status: GatewayStatus): string {
         return 'warning';
     }
     return 'check';
+}
+
+/** The tree icon for the Claude Code row. */
+function claudeCodeIcon(state: ClaudeCodeState): string {
+    switch (state) {
+        case 'passthrough-here':
+            return 'check';
+        case 'passthrough-stale-key':
+            return 'warning';
+        case 'unparseable':
+            return 'error';
+        case 'not-configured':
+            return 'circle-outline';
+        default:
+            return 'info';
+    }
 }
 
 export class AgentRouterTreeProvider
@@ -263,6 +283,7 @@ export class AgentRouterTreeProvider
         );
         item.description = node.description;
         item.tooltip = node.tooltip;
+        item.contextValue = node.contextValue;
         if (node.icon) {
             item.iconPath = new vscode.ThemeIcon(node.icon);
         }
@@ -334,7 +355,13 @@ export class AgentRouterTreeProvider
             ([, url]) => url === config.baseUrl
         )?.[0];
         const catalog = this.deps.catalogInfo();
-        const gateway = await this.deps.gatewayStatus();
+        const [gateway, claudeCode] = await Promise.all([
+            this.deps.gatewayStatus(),
+            this.deps.claudeCodeState(),
+        ]);
+        const claudeConfigured =
+            claudeCode === 'passthrough-here' ||
+            claudeCode === 'passthrough-stale-key';
         return [
             {
                 kind: 'leaf',
@@ -370,6 +397,20 @@ export class AgentRouterTreeProvider
                 tooltip: 'Click to refresh the model list and catalog.',
                 icon: 'database',
                 command: 'tetrate-model-provider.refreshModels',
+            },
+            {
+                kind: 'leaf',
+                label: 'Claude Code',
+                description: describeClaudeCodeState(claudeCode),
+                tooltip:
+                    'Claude Code passthrough: Claude Code signs in with your own Claude subscription and routes through this endpoint. Click to configure.',
+                icon: claudeCodeIcon(claudeCode),
+                command: 'tetrate-model-provider.configureClaudeCode',
+                // Gates the inline remove action to a configuration that
+                // points here; see package.json.
+                ...(claudeConfigured
+                    ? { contextValue: 'claude-code-configured' }
+                    : {}),
             },
             { kind: 'providerHealth' },
             { kind: 'profiles' },

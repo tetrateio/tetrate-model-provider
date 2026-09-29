@@ -29,7 +29,8 @@ exports.run = async () => {
     for (const id of [
         'menu', 'showUsage', 'testConnection', 'addProfile', 'removeProfile',
         'useInChat', 'chooseModels', 'switchEndpoint', 'refreshModelsView',
-        'openDashboard',
+        'openDashboard', 'configureClaudeCode', 'removeClaudeCodeConfig',
+        'refreshClaudeCodeModels',
     ]) {
         check(
             `command ${id} is registered`,
